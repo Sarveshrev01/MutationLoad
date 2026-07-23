@@ -137,7 +137,7 @@ The script can then be adjusted to change the parameters for a particular simula
 
 + fitnesstype – 0 for a run using relative fitness, 1 for a run using absolute fitness 
 
-+ timeSteps – number of generations the simulation should run for 
++ timeSteps – Number of birth and death events in the simulation. This is equal to the population size times the number of generations.
 
 + initialPopsize –initial number of individuals in the population 
 
