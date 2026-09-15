@@ -42,7 +42,7 @@
  * ------------------------------------------------------------------------- */
 #define MAXMUTATIONSPERGAMETE 10000
 
-void MutateGamete(int tskitstatus, int isburninphaseover,  tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationsitesarray, tsk_id_t childnode, int totaltimesteps, double currenttimestep, bool isabsolute, int totalindividualgenomelength, double *gamete, double mutationeffectsize)
+void MutateGamete(int tskitstatus, int isburninphaseover,  tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationsitesarray, tsk_id_t childnode, int totaltimesteps, double currenttimestep, bool isabsolute, int totalindividualgenomelength, double *gamete, GameteState *gs, double mutationeffectsize)
 {
     /* NOTE (Tier 3): the isburninphaseover parameter is unused in this function.
      * In the original code it gated recording for absolute runs only; the relative
@@ -50,11 +50,16 @@ void MutateGamete(int tskitstatus, int isburninphaseover,  tsk_table_collection_
      * (see item 7). The parameter is kept so this shared signature is unchanged. */
     tsk_id_t idofnewmutation;
     int mutatedsite = DetermineMutationSite(totalindividualgenomelength/2);
+    double appliedeffect;
     if(isabsolute){
-        gamete[mutatedsite] += (mutationeffectsize);
+        appliedeffect = mutationeffectsize;
     }else{
-        gamete[mutatedsite] += log(1 + mutationeffectsize);
+        appliedeffect = log(1 + mutationeffectsize);
     }
+    gamete[mutatedsite] += appliedeffect;
+    /* Keep the gamete's running log-fitness in step, so PerformBirth never has
+     * to re-sum the genome. */
+    if (gs != NULL) gs->logfitnesssum += (long double) appliedeffect;
     char derivedstate[400];
     sprintf(derivedstate, "%.11f", mutationeffectsize);
     /* NOTE (item 7): callers in the relative path now pass a *recording-active*
@@ -89,7 +94,7 @@ double PerformDeath(bool isabsolute, int tskitstatus, int isburninphaseover, int
 /* NOTE (Tier 1): ismodular and elementsperlb are unused - modular epistasis is
  * not supported in this build and main() rejects it. The parameters are kept so
  * this shared signature is unchanged. */
-void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t childnode1, tsk_id_t childnode2, bool isabsolute, double *parent1gameteFitness, int *parent1gameteMutators, char *parent1gameteMask, double *parent2gameteFitness, int *parent2gameteMutators, char *parent2gameteMask, int maxPopSize, int *pPopSize, int birthplace, Individual *wholepopulation, int totalindividualgenomelength, int deleteriousdistribution, long double *wholepopulationselectiontree, long double *wholepopulationdeathratesarray, int *wholepopulationindex, bool *wholepopulationisfree, long double *psumofloads, long double *psumofdeathrates, long double *psumofdeathratessquared, double b_0, double r,  int i_init, double s, long double *psumofload, long double *psumofloadsquared, FILE *miscfilepointer, const char *globalmodifiermask, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate)
+void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t childnode1, tsk_id_t childnode2, bool isabsolute, double *parent1gameteFitness, int *parent1gameteMutators, const GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, const GameteState *parent2state, int maxPopSize, int *pPopSize, int birthplace, Individual *wholepopulation, int totalindividualgenomelength, int deleteriousdistribution, long double *wholepopulationselectiontree, long double *wholepopulationdeathratesarray, int *wholepopulationindex, bool *wholepopulationisfree, long double *psumofloads, long double *psumofdeathrates, long double *psumofdeathratessquared, double b_0, double r,  int i_init, double s, long double *psumofload, long double *psumofloadsquared, FILE *miscfilepointer, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate)
 {
     int i;
     long double newwi;
@@ -103,40 +108,38 @@ void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int el
         wholepopulation[birthplace].mutatorArray[halfgenome + i] = parent2gameteMutators[i];
     }
 
-    /* Inherited-mask mode only: the "which blocks carry a modifier locus" mask
-     * travels with the gamete, so it is copied here exactly like the state and
-     * fitness arrays. In global-mask mode modifierMask is NULL everywhere and
-     * the shared globalmodifiermask is consulted instead, so there is nothing
-     * to copy and no per-individual memory is spent. */
-    if (wholepopulation[birthplace].modifierMask != NULL && parent1gameteMask != NULL && parent2gameteMask != NULL) {
-        for (i = 0; i < halfgenome; i++) {
-            wholepopulation[birthplace].modifierMask[i] = parent1gameteMask[i];
-            wholepopulation[birthplace].modifierMask[halfgenome + i] = parent2gameteMask[i];
-        }
-    }
+    /* -------------------------------------------------------------------
+     * O(1) assembly of the newborn's summary state.
+     * -------------------------------------------------------------------
+     * Both gametes already carry their own running log-fitness and modifier
+     * sum, built while RecombineChromosomesIntoGamete copied them and updated
+     * by MutateGamete and SwitchModifierLoci. The diploid values are simply
+     * the two halves added together, so neither this function nor the rate
+     * update needs to sweep the genome. The two O(2L) sweeps that used to live
+     * here and in UpdateIndividual are gone.
+     * ------------------------------------------------------------------- */
+    wholepopulation[birthplace].logFitness     = parent1state->logfitnesssum + parent2state->logfitnesssum;
+    wholepopulation[birthplace].netModifierSum = parent1state->modifiersum   + parent2state->modifiersum;
 
-    /* As in PerformDeath, the isabsolute branch was an empty stub and isabsolute
-     * is always false in this build. Original structure preserved:
+    /* The isabsolute branch was an empty stub. main() aborts on absolute runs and
+     * RunSimulationRel refuses them, so isabsolute is always false here and only
+     * the relative body ever executed. Original structure preserved:
      *
      * if(isabsolute){
      *     // Absolute logic...
      * }
      * else{
      */
-    // Re-calculate fitness since we just overwrote the arrays
-    double currentlinkageblockssum = 0.0;
-    for (i = 0; i < totalindividualgenomelength; i++) {
-        currentlinkageblockssum += wholepopulation[birthplace].fitnessArray[i];
-    }
-    newwi = exp(currentlinkageblockssum);
+    newwi = expl(wholepopulation[birthplace].logFitness);
 
     Fen_set(wholepopulationselectiontree, maxPopSize, newwi, birthplace);
-    wholepopulation[birthplace].fitness = newwi;
+    wholepopulation[birthplace].fitness = (double) newwi;
     *psumofloads += newwi;
     /* } */
-    
-    // Update Cached Mutation Rate for new individual
-    UpdateIndividual(&wholepopulation[birthplace], totalindividualgenomelength, globalmodifiermask, mutator_strength_factor, baseline_deleterious_rate, baseline_beneficial_rate);
+
+    // Update Cached Mutation Rate for new individual. O(1): reads only the
+    // already-assembled logFitness and netModifierSum.
+    RefreshIndividualRates(&wholepopulation[birthplace], mutator_strength_factor, baseline_deleterious_rate, baseline_beneficial_rate);
 
     /* NOTE (item 7): as in MutateGamete, the relative path passes a
      * recording-active flag here, not the raw tskitstatus. */
@@ -146,83 +149,63 @@ void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int el
     }
 }
 
-Individual createIndividual(double *fitnessArray, int *mutatorArray, char *modifierMask, int totalindividualgenomelength){
+Individual createIndividual(double *fitnessArray, int *mutatorArray, int totalindividualgenomelength){
     Individual ind;
     ind.fitnessArray = fitnessArray;
     ind.mutatorArray = mutatorArray;
-    ind.modifierMask = modifierMask;   /* NULL in MODIFIERMASK_GLOBAL mode */
-    ind.fitness = 0.0;
+    ind.logFitness = 0.0;
+    ind.fitness = 1.0;
     ind.mutationRate = 0.0;
     ind.beneficialMutationRate = 0.0;
-    ind.mutatorCount = 0;
-    ind.modifierCount = 0;
     ind.netModifierSum = 0;
     return ind;
 }
 
 /* -------------------------------------------------------------------------
- * UpdateIndividual
+ * RefreshIndividualRates   -   O(1)
  * -------------------------------------------------------------------------
- * Recomputes everything that is cached on an Individual: its fitness Wi, the
- * exponent n, the realised deleterious and beneficial mutation rates, and the
- * bookkeeping counts used for the per-generation output.
+ * Derives everything that depends on the two maintained summary values:
  *
- *   n  = sum of mutatorArray over the whole diploid genome
- *        (+1 per mutator allele; 0 or -1 per anti-mutator allele depending on
- *         the antimutator_encoding; 0 per non-modifier block)
+ *      fitness        = exp(logFitness)
+ *      mu_deleterious = mu_d0 * f^n          <- item 8: both rates use the same
+ *      mu_beneficial  = mu_b0 * f^n             f and the same n
  *
- *   mu_deleterious = mu_d0 * f^n        <- item 8: BOTH rates are now scaled by
- *   mu_beneficial  = mu_b0 * f^n           the same modifier equation, using the
- *                                          same f and the same n, differing only
- *                                          in the baseline rate.
+ * where n = netModifierSum, the NET sum over the diploid genome (+1 per mutator,
+ * -1 per anti-mutator, 0 per non-modifier block).
  *
- * globalmodifiermask is the shared haploid-length mask in MODIFIERMASK_GLOBAL
- * mode and NULL in MODIFIERMASK_INHERITED mode (where ind->modifierMask is used).
- * It is only needed to count how many blocks carry a modifier locus at all,
- * which is reported but does not enter the rate calculation.
+ * This replaces the old UpdateIndividual, which swept all 2L blocks on every
+ * single birth. Both logFitness and netModifierSum are now carried through
+ * recombination and mutation incrementally, so nothing here touches the arrays.
  * ------------------------------------------------------------------------- */
-void UpdateIndividual(Individual *ind, int totalindividualgenomelength, const char *globalmodifiermask, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate){
-    int i;
-    long double currentlinkageblockssum = 0.0;
-    int mutator_count = 0;
-    int modifier_count = 0;
-    int net_modifier_sum = 0;
-    int halfgenome = totalindividualgenomelength / 2;
-
-    /* One pass over the haploid length handles both homologs, so the global
-     * mask (which is haploid-length and mirrored across homologs) can be read
-     * with a single index and no modulo in the inner loop. */
-    for (i = 0; i < halfgenome; i++){
-        int stateA = ind->mutatorArray[i];
-        int stateB = ind->mutatorArray[halfgenome + i];
-
-        currentlinkageblockssum += ind->fitnessArray[i];
-        currentlinkageblockssum += ind->fitnessArray[halfgenome + i];
-
-        net_modifier_sum += stateA + stateB;
-        if (stateA == 1) mutator_count++;
-        if (stateB == 1) mutator_count++;
-
-        if (globalmodifiermask != NULL) {
-            /* MODIFIERMASK_GLOBAL: same mask on both homologs. */
-            if (globalmodifiermask[i]) modifier_count += 2;
-        } else if (ind->modifierMask != NULL) {
-            /* MODIFIERMASK_INHERITED: each slot carries its own mask bit. */
-            if (ind->modifierMask[i]) modifier_count++;
-            if (ind->modifierMask[halfgenome + i]) modifier_count++;
-        }
-    }
-
-    ind->fitness = exp(currentlinkageblockssum);
-    ind->mutatorCount = mutator_count;
-    ind->modifierCount = modifier_count;
-    ind->netModifierSum = net_modifier_sum;
-    // Formula: mu = mu0 * f^n
-    ind->mutationRate = baseline_deleterious_rate * pow(mutator_strength_factor, (double) net_modifier_sum);
-    ind->beneficialMutationRate = baseline_beneficial_rate * pow(mutator_strength_factor, (double) net_modifier_sum);
+void RefreshIndividualRates(Individual *ind, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate){
+    double modifierfactor = pow(mutator_strength_factor, (double) ind->netModifierSum);
+    ind->fitness = (double) expl(ind->logFitness);
+    ind->mutationRate           = baseline_deleterious_rate * modifierfactor;
+    ind->beneficialMutationRate = baseline_beneficial_rate  * modifierfactor;
 }
 
-void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismodular, int elementsperlb, int isburninphaseover, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * childnode, int totaltimesteps, double currenttimestep, int persontorecombine, int chromosomesize, int numberofchromosomes, double *gameteFitness, int *gameteMutators, char *gameteMask, const char *globalmodifiermask, ModifierLocusIndex *gameteModifierIndex, Individual *wholepopulation, int totalindividualgenomelength)
+/* -------------------------------------------------------------------------
+ * RecomputeIndividualFromArrays   -   O(2L)
+ * -------------------------------------------------------------------------
+ * Rebuilds logFitness and netModifierSum from the arrays themselves, then
+ * refreshes the derived values. Used when initialising the founding population,
+ * and available as the exact re-sync for the incrementally maintained values if
+ * floating-point drift over a very long run ever needs correcting.
+ * ------------------------------------------------------------------------- */
+void RecomputeIndividualFromArrays(Individual *ind, int totalindividualgenomelength, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate){
+    int i;
+    long double sum = 0.0;
+    int net = 0;
+    for (i = 0; i < totalindividualgenomelength; i++){
+        sum += ind->fitnessArray[i];
+        net += ind->mutatorArray[i];   /* +1, -1 or 0 - no mask lookup needed */
+    }
+    ind->logFitness = sum;
+    ind->netModifierSum = net;
+    RefreshIndividualRates(ind, mutator_strength_factor, baseline_deleterious_rate, baseline_beneficial_rate);
+}
+
+void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismodular, int elementsperlb, int isburninphaseover, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * childnode, int totaltimesteps, double currenttimestep, int persontorecombine, int chromosomesize, int numberofchromosomes, double *gameteFitness, int *gameteMutators, GameteState *gs, Individual *wholepopulation, int totalindividualgenomelength)
 {
     int recombinationsite, startchromosome, h, i, returnvaluefortskit;
     
@@ -230,11 +213,11 @@ void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismod
     tsk_id_t parentnode2 = (tsk_id_t) (2*persontorecombine + 1);
     int chromatid_len = totalindividualgenomelength / 2;
 
-    /* The modifier index is rebuilt from scratch for every gamete. */
-    if (gameteModifierIndex != NULL) {
-        gameteModifierIndex->nmutatorpositions = 0;
-        gameteModifierIndex->nantimutatorpositions = 0;
-    }
+    /* The gamete's summary state is rebuilt from scratch for every gamete. */
+    gs->nmutatorpositions = 0;
+    gs->nantimutatorpositions = 0;
+    gs->logfitnesssum = 0.0;
+    gs->modifiersum = 0;
 
     /* NOTE (item 7): the relative path passes a recording-active flag here. */
     if (tskitstatus != 0){
@@ -274,7 +257,7 @@ void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismod
             for (i = 0; i < chromosomesize; i++) {
                 int source_offset;
                 int idx = h*chromosomesize + i;
-                int ismodifier;
+                int state;
 
                 if (i < recombinationsite) {
                     source_offset = (startchromosome == 0) ? 0 : chromatid_len;
@@ -283,25 +266,21 @@ void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismod
                 }
 
                 gameteFitness[idx]  = wholepopulation[persontorecombine].fitnessArray[source_offset + idx];
-                gameteMutators[idx] = wholepopulation[persontorecombine].mutatorArray[source_offset + idx];
+                state               = wholepopulation[persontorecombine].mutatorArray[source_offset + idx];
+                gameteMutators[idx] = state;
 
-                if (globalmodifiermask != NULL) {
-                    /* MODIFIERMASK_GLOBAL: mask is haploid-length and mirrored,
-                     * so the copied slot has the same mask bit either way and
-                     * nothing needs to be carried in the gamete. */
-                    ismodifier = globalmodifiermask[idx];
-                } else {
-                    /* MODIFIERMASK_INHERITED: carry the mask bit with the block. */
-                    ismodifier = wholepopulation[persontorecombine].modifierMask[source_offset + idx];
-                    if (gameteMask != NULL) gameteMask[idx] = (char) ismodifier;
-                }
+                /* Running log-fitness, so PerformBirth never re-sums the genome. */
+                gs->logfitnesssum += (long double) gameteFitness[idx];
 
-                if (ismodifier && gameteModifierIndex != NULL) {
-                    if (gameteMutators[idx] == 1) {
-                        gameteModifierIndex->mutatorpositions[gameteModifierIndex->nmutatorpositions++] = idx;
-                    } else {
-                        gameteModifierIndex->antimutatorpositions[gameteModifierIndex->nantimutatorpositions++] = idx;
-                    }
+                /* The state array is self-describing: non-zero means this block
+                 * carries a modifier locus. +1 mutator, -1 anti-mutator, 0 inert.
+                 * No mask array is consulted or carried. */
+                if (state == 1) {
+                    gs->mutatorpositions[gs->nmutatorpositions++] = idx;
+                    gs->modifiersum += 1;
+                } else if (state == -1) {
+                    gs->antimutatorpositions[gs->nantimutatorpositions++] = idx;
+                    gs->modifiersum -= 1;
                 }
             }
         } else {
@@ -347,10 +326,10 @@ void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismod
  *
  * Two changes, neither of which alters the model:
  *
- *   1. Only modifier loci are considered. Non-modifier blocks can never change
- *      state, so testing them was pure waste. RecombineChromosomesIntoGamete
- *      already walks the gamete to copy it, so it builds the list of modifier
- *      positions (split by current state) for free.
+ *   1. Only modifier loci are considered. Non-modifier blocks are held at 0 and
+ *      can never change state, so testing them was pure waste.
+ *      RecombineChromosomesIntoGamete already walks the gamete to copy it, so it
+ *      builds the two position lists (+1 and -1) for free.
  *
  *   2. Instead of one Bernoulli trial per eligible locus, the NUMBER of
  *      switches is drawn once from the exact Binomial distribution that those
@@ -367,51 +346,54 @@ void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismod
  * per-locus loop did (each locus was evaluated once, against the state it had
  * on entry), so a locus can never be flipped twice in one call.
  *
- * antimutatorstate is 0 or -1 depending on the antimutator_encoding argument.
+ * Anti-mutators are always stored as -1, so each flip moves the gamete's
+ * modifier sum by exactly +2 or -2 and gs->modifiersum is kept in step.
  * ------------------------------------------------------------------------- */
-static void SwitchModifierLoci(int *gameteMutators, ModifierLocusIndex *gameteModifierIndex, int antimutatorstate, double mutator_switch_rate, double mutator_bias, gsl_rng * randomnumbergeneratorforgamma)
+static void SwitchModifierLoci(int *gameteMutators, GameteState *gs, double mutator_switch_rate, double mutator_bias, gsl_rng * randomnumbergeneratorforgamma)
 {
     unsigned int numberofswitches;
     unsigned int j;
     double uprate, downrate;
 
-    if (gameteModifierIndex == NULL || mutator_switch_rate <= 0.0) return;
+    if (gs == NULL || mutator_switch_rate <= 0.0) return;
 
     uprate   = mutator_switch_rate * mutator_bias;
     downrate = mutator_switch_rate;
     if (uprate   > 1.0) uprate   = 1.0;
     if (downrate > 1.0) downrate = 1.0;
 
-    /* anti-mutator -> mutator */
-    if (gameteModifierIndex->nantimutatorpositions > 0 && uprate > 0.0) {
-        numberofswitches = gsl_ran_binomial(randomnumbergeneratorforgamma, uprate, (unsigned int) gameteModifierIndex->nantimutatorpositions);
+    /* anti-mutator (-1) -> mutator (+1). Each flip moves n by +2. */
+    if (gs->nantimutatorpositions > 0 && uprate > 0.0) {
+        numberofswitches = gsl_ran_binomial(randomnumbergeneratorforgamma, uprate, (unsigned int) gs->nantimutatorpositions);
         for (j = 0; j < numberofswitches; j++) {
             /* Partial Fisher-Yates: swap a uniformly chosen not-yet-used entry
              * into slot j, guaranteeing j distinct positions after j steps. */
-            int remaining = gameteModifierIndex->nantimutatorpositions - (int) j;
+            int remaining = gs->nantimutatorpositions - (int) j;
             int pick = (int) j + (int) pcg32_boundedrand((uint32_t) remaining);
-            int chosen = gameteModifierIndex->antimutatorpositions[pick];
-            gameteModifierIndex->antimutatorpositions[pick] = gameteModifierIndex->antimutatorpositions[j];
-            gameteModifierIndex->antimutatorpositions[j] = chosen;
+            int chosen = gs->antimutatorpositions[pick];
+            gs->antimutatorpositions[pick] = gs->antimutatorpositions[j];
+            gs->antimutatorpositions[j] = chosen;
             gameteMutators[chosen] = 1;
+            gs->modifiersum += 2;
         }
     }
 
-    /* mutator -> anti-mutator */
-    if (gameteModifierIndex->nmutatorpositions > 0 && downrate > 0.0) {
-        numberofswitches = gsl_ran_binomial(randomnumbergeneratorforgamma, downrate, (unsigned int) gameteModifierIndex->nmutatorpositions);
+    /* mutator (+1) -> anti-mutator (-1). Each flip moves n by -2. */
+    if (gs->nmutatorpositions > 0 && downrate > 0.0) {
+        numberofswitches = gsl_ran_binomial(randomnumbergeneratorforgamma, downrate, (unsigned int) gs->nmutatorpositions);
         for (j = 0; j < numberofswitches; j++) {
-            int remaining = gameteModifierIndex->nmutatorpositions - (int) j;
+            int remaining = gs->nmutatorpositions - (int) j;
             int pick = (int) j + (int) pcg32_boundedrand((uint32_t) remaining);
-            int chosen = gameteModifierIndex->mutatorpositions[pick];
-            gameteModifierIndex->mutatorpositions[pick] = gameteModifierIndex->mutatorpositions[j];
-            gameteModifierIndex->mutatorpositions[j] = chosen;
-            gameteMutators[chosen] = antimutatorstate;
+            int chosen = gs->mutatorpositions[pick];
+            gs->mutatorpositions[pick] = gs->mutatorpositions[j];
+            gs->mutatorpositions[j] = chosen;
+            gameteMutators[chosen] = -1;
+            gs->modifiersum -= 2;
         }
     }
 }
 
-bool ProduceMutatedGamete(int tskitstatus, int isburninphaseover, tsk_table_collection_t *treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, tsk_id_t * childnode, int totaltimesteps, double currenttimestep, int parent, bool isabsolute, int individualgenomelength, double parent_specific_deleterious_rate, double parent_specific_beneficial_rate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, double *gameteFitness, int *gameteMutators, ModifierLocusIndex *gameteModifierIndex, int antimutatorstate, double mutator_switch_rate, double mutator_bias, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer)
+bool ProduceMutatedGamete(int tskitstatus, int isburninphaseover, tsk_table_collection_t *treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, tsk_id_t * childnode, int totaltimesteps, double currenttimestep, int parent, bool isabsolute, int individualgenomelength, double parent_specific_deleterious_rate, double parent_specific_beneficial_rate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, double *gameteFitness, int *gameteMutators, GameteState *gs, double mutator_switch_rate, double mutator_bias, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer)
 {
     int k, numberofbeneficialmutations, numberofdeleteriousmutations;
     double generatedSb;
@@ -452,7 +434,7 @@ bool ProduceMutatedGamete(int tskitstatus, int isburninphaseover, tsk_table_coll
 
     for (k = 0; k < numberofdeleteriousmutations; k++) {
         double effect = isabsolute ? Sds[k] : -Sds[k];
-        MutateGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationsitesarray, *childnode, totaltimesteps, currenttimestep, isabsolute, individualgenomelength, gameteFitness, effect);
+        MutateGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationsitesarray, *childnode, totaltimesteps, currenttimestep, isabsolute, individualgenomelength, gameteFitness, gs, effect);
     }
     
     /* ---------------------------------------------------------------------
@@ -479,20 +461,20 @@ bool ProduceMutatedGamete(int tskitstatus, int isburninphaseover, tsk_table_coll
         //point distribution
         for (k = 0; k < numberofbeneficialmutations; k++) {
             generatedSb = Sb;
-            MutateGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationsitesarray, *childnode, totaltimesteps, currenttimestep, isabsolute, individualgenomelength, gameteFitness, (isabsolute ? -generatedSb : generatedSb));
+            MutateGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationsitesarray, *childnode, totaltimesteps, currenttimestep, isabsolute, individualgenomelength, gameteFitness, gs, (isabsolute ? -generatedSb : generatedSb));
         }
     } else if (beneficialdistribution == 1) {
         //exponential distribution
         for (k = 0; k < numberofbeneficialmutations; k++) {
             generatedSb = gsl_ran_exponential(randomnumbergeneratorforgamma, Sb);
-            MutateGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationsitesarray, *childnode, totaltimesteps, currenttimestep, isabsolute, individualgenomelength, gameteFitness, (isabsolute ? -generatedSb : generatedSb));
+            MutateGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationsitesarray, *childnode, totaltimesteps, currenttimestep, isabsolute, individualgenomelength, gameteFitness, gs, (isabsolute ? -generatedSb : generatedSb));
         }
     } else if (beneficialdistribution == 2) {
         //uniform distribution
         for (k = 0; k < numberofbeneficialmutations; k++) {
             double upperlimitforuniform = (2 * Sb);
             generatedSb = gsl_ran_flat(randomnumbergeneratorforgamma, 0, upperlimitforuniform);
-            MutateGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationsitesarray, *childnode, totaltimesteps, currenttimestep, isabsolute, individualgenomelength, gameteFitness, (isabsolute ? -generatedSb : generatedSb));
+            MutateGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationsitesarray, *childnode, totaltimesteps, currenttimestep, isabsolute, individualgenomelength, gameteFitness, gs, (isabsolute ? -generatedSb : generatedSb));
         }
     } else {
         fprintf(miscfilepointer, "Error: type of distribution for beneficial effect sizes not recognized.");
@@ -500,10 +482,10 @@ bool ProduceMutatedGamete(int tskitstatus, int isburninphaseover, tsk_table_coll
         exit(0);
     }
 
-    /* 2. Modifier-locus switching (0/-1 <-> +1).
+    /* 2. Modifier-locus switching (-1 <-> +1).
      *    Only modifier loci are eligible; non-modifier blocks stay at 0 forever.
      *    See the comment block above SwitchModifierLoci for what changed. */
-    SwitchModifierLoci(gameteMutators, gameteModifierIndex, antimutatorstate, mutator_switch_rate, mutator_bias, randomnumbergeneratorforgamma);
+    SwitchModifierLoci(gameteMutators, gs, mutator_switch_rate, mutator_bias, randomnumbergeneratorforgamma);
 
     return true;
 }

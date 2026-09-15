@@ -27,8 +27,8 @@ int main(int argc, char *argv[]) {
      * NOTE: this used to read "argc != 30" while the parser consumed only 28
      * values, because the snapshot filename argument was never consumed (see the
      * fix in AssignArgumentstoVar). The count is now derived from the parser. */
-    if (argc != 37) {
-        printf("Incorrect number of arguments. Expected 36, got %d.\n", argc-1);
+    if (argc != 27) {
+        printf("Incorrect number of arguments. Expected 26, got %d.\n", argc-1);
         return -1;
     }
     
@@ -40,8 +40,12 @@ int main(int argc, char *argv[]) {
      */
     FILE *veryverbosefilepointer;
     
-    int Nxtimesteps, popsize, chromosomesize, numberofchromosomes, beneficialdistribution, typeofrun, randomnumberseed, K, relorabs, i_init, tskitstatus, nonmodormod, elementsperlb, snapshot, deleteriousdistribution, rawdatafilesize, calcfixation;
-    double deleteriousmutationrate, bentodelmutrate, Sbtemp, slopeforcontourline, r, s, SdtoSbratio, redinmaxpopsize;
+    /* The absolute-fitness arguments (K, fitnesstype, r, i_init, s, snapshot and
+     * its filename, redinmaxpopsize, calcfixation) have been removed from the
+     * command line entirely: this build only runs relative fitness, and none of
+     * them ever reached the relative code path. */
+    int Nxtimesteps, popsize, chromosomesize, numberofchromosomes, beneficialdistribution, typeofrun, randomnumberseed, tskitstatus, nonmodormod, elementsperlb, deleteriousdistribution, rawdatafilesize;
+    double deleteriousmutationrate, bentodelmutrate, Sbtemp, slopeforcontourline, SdtoSbratio;
     
     // New Variables for Mutator Evolution
     double mutator_strength_factor; // f in mu = mu0 * f^n
@@ -49,17 +53,16 @@ int main(int argc, char *argv[]) {
     double mutator_bias;            // Bias towards mutators (A->M / M->A)
 
     // New Variables for the modifier-locus model (see sharedfunc_flag.h)
-    double modifier_locus_fraction;  // p: fraction of linkage blocks carrying a modifier locus
-    int    modifier_mask_mode;       // MODIFIERMASK_GLOBAL (0) or MODIFIERMASK_INHERITED (1)
-    int    antimutator_encoding;     // ANTIMUTATOR_AS_ZERO (0) or ANTIMUTATOR_AS_MINUS1 (1)
-    double initial_mutator_fraction; // q: fraction of modifier loci starting in the +1 state
+    int    nmodifierlociperchromosome; // number of modifier loci ON EACH chromosome
+    double initial_mutator_fraction;   // q: fraction of modifier loci starting in the +1 state
 
     // New Variables for the optional detailed per-individual tracking output
     int    trackindividuals;         // 0 = off, 1 = on
     int    trackinterval;            // dump every this many N-timesteps
     int    trackstartgen;            // first generation eligible for dumping
+    int    checkpointinterval;       // RESERVED: restart checkpoint every N generations; 0 = never
 
-    char *Nxtimestepsname, *popsizename, *deleteriousmutationratename, *chromosomesizename, *numberofchromosomesname, *slopeforcontourlinename, *randomnumberseedname, *Kname, *rname, *i_initname, *sname, *elementsperlbname, *prevsnapshotfilename, *SdtoSbrationame, *redinmaxpopsizename, *iscalcfixationname, *mutator_strength_factorname, *mutator_switch_ratename, *mutator_biasname;
+    char *Nxtimestepsname, *popsizename, *deleteriousmutationratename, *chromosomesizename, *numberofchromosomesname, *slopeforcontourlinename, *randomnumberseedname, *elementsperlbname, *SdtoSbrationame, *mutator_strength_factorname, *mutator_switch_ratename, *mutator_biasname;
     
     Nxtimestepsname = (char *)malloc(30);
     popsizename = (char *)malloc(30);
@@ -68,28 +71,25 @@ int main(int argc, char *argv[]) {
     numberofchromosomesname = (char *)malloc(30);
     slopeforcontourlinename = (char *)malloc(30);
     randomnumberseedname = (char *)malloc(30);
-    Kname = (char *)malloc(30);
-    rname = (char *)malloc(30);
-    i_initname = (char *)malloc(30);
-    sname = (char *)malloc(30);
     elementsperlbname = (char *)malloc(30);
-    prevsnapshotfilename = (char *)malloc(200);
     SdtoSbrationame = (char *)malloc(30);
-    redinmaxpopsizename = (char *)malloc(30);
-    iscalcfixationname = (char *)malloc(30);
     mutator_strength_factorname = (char *)malloc(30);
     mutator_switch_ratename = (char *)malloc(30);
     mutator_biasname = (char *)malloc(30);
 
     int wrong_args;
     // Updated AssignArgumentstoVar to handle new params
-    wrong_args = AssignArgumentstoVar(argv, &Nxtimesteps, Nxtimestepsname, &popsize, popsizename, &deleteriousmutationrate, deleteriousmutationratename, &chromosomesize, chromosomesizename, &numberofchromosomes, numberofchromosomesname, &bentodelmutrate, &Sbtemp, &beneficialdistribution, &typeofrun, &slopeforcontourline, slopeforcontourlinename, &randomnumberseed, randomnumberseedname, &K, Kname, &relorabs, &r, rname, &i_init, i_initname, &s, sname, &tskitstatus, &nonmodormod, &elementsperlb, elementsperlbname, &snapshot, prevsnapshotfilename, &SdtoSbratio, SdtoSbrationame, &deleteriousdistribution, &rawdatafilesize, &redinmaxpopsize, redinmaxpopsizename, &calcfixation, &mutator_strength_factor, mutator_strength_factorname, &mutator_switch_rate, mutator_switch_ratename, &mutator_bias, mutator_biasname, &modifier_locus_fraction, &modifier_mask_mode, &antimutator_encoding, &initial_mutator_fraction, &trackindividuals, &trackinterval, &trackstartgen);
+    wrong_args = AssignArgumentstoVar(argv, &Nxtimesteps, Nxtimestepsname, &popsize, popsizename, &deleteriousmutationrate, deleteriousmutationratename, &chromosomesize, chromosomesizename, &numberofchromosomes, numberofchromosomesname, &bentodelmutrate, &Sbtemp, &beneficialdistribution, &typeofrun, &slopeforcontourline, slopeforcontourlinename, &randomnumberseed, randomnumberseedname, &tskitstatus, &nonmodormod, &elementsperlb, elementsperlbname, &SdtoSbratio, SdtoSbrationame, &deleteriousdistribution, &rawdatafilesize, &mutator_strength_factor, mutator_strength_factorname, &mutator_switch_rate, mutator_switch_ratename, &mutator_bias, mutator_biasname, &nmodifierlociperchromosome, &initial_mutator_fraction, &trackindividuals, &trackinterval, &trackstartgen, &checkpointinterval);
 
     if(wrong_args != 1){
         return -1;
     }
 
-    bool isabsolute = (relorabs == 1);
+    /* Absolute fitness is not part of this build: the argument that selected it
+     * has been removed from the command line. Hard-wired false; original line:
+     * bool isabsolute = (relorabs == 1);
+     */
+    bool isabsolute = false;
     /* -----------------------------------------------------------------------
      * MODULAR EPISTASIS IS NOT SUPPORTED IN THE MUTATION-RATE-EVOLUTION BUILD.
      * -----------------------------------------------------------------------
@@ -109,16 +109,24 @@ int main(int argc, char *argv[]) {
      * --------------------------------------------------------------------- */
     bool ismodular = false;
     if (nonmodormod != 0) {
-        printf("Error: modular epistasis (argument 18) is not supported in this build; it must be 0, got %d.\n", nonmodormod);
+        printf("Error: modular epistasis (argument 13) is not supported in this build; it must be 0, got %d.\n", nonmodormod);
         return -1;
     }
-    bool issnapshot = (snapshot == 1);
+    /* The snapshot/restart workflow belonged to the absolute-fitness runs and its
+     * two arguments are gone. Original line:
+     * bool issnapshot = (snapshot == 1);
+     */
+    bool issnapshot = false;
     /* isredinmaxpopsize - COMMENTED OUT (Tier 3): its only consumer was
      * MakeRawDataFileName, which is commented out below. The redinmaxpopsize
      * argument itself is still parsed so positional slots stay aligned.
      * bool isredinmaxpopsize = (redinmaxpopsize != 0.0);
      */
-    bool iscalcfixation = (calcfixation == 1);
+    /* Fixation calculation was an absolute-fitness feature and its argument is
+     * gone. Original line:
+     * bool iscalcfixation = (calcfixation == 1);
+     */
+    bool iscalcfixation = false;
 
     double Sb1 = 0.0, Sb2;
     double *pSb1 = &Sb1, *pSb2 = &Sb2;
@@ -137,20 +145,12 @@ int main(int argc, char *argv[]) {
      * Validated here rather than deep inside the simulation so that a bad
      * command line fails immediately and says exactly what is wrong.
      * ------------------------------------------------------------------- */
-    if (modifier_locus_fraction < 0.0 || modifier_locus_fraction > 1.0) {
-        printf("Error: modifier_locus_fraction must be between 0 and 1 (got %g).\n", modifier_locus_fraction);
+    if (nmodifierlociperchromosome < 0 || nmodifierlociperchromosome > chromosomesize) {
+        printf("Error: nmodifierlociperchromosome must be between 0 and chromosomesize (%d), got %d.\n", chromosomesize, nmodifierlociperchromosome);
         return -1;
     }
     if (initial_mutator_fraction < 0.0 || initial_mutator_fraction > 1.0) {
         printf("Error: initial_mutator_fraction must be between 0 and 1 (got %g).\n", initial_mutator_fraction);
-        return -1;
-    }
-    if (modifier_mask_mode != MODIFIERMASK_GLOBAL && modifier_mask_mode != MODIFIERMASK_INHERITED) {
-        printf("Error: modifier_mask_mode must be 0 (global) or 1 (inherited), got %d.\n", modifier_mask_mode);
-        return -1;
-    }
-    if (antimutator_encoding != ANTIMUTATOR_AS_ZERO && antimutator_encoding != ANTIMUTATOR_AS_MINUS1) {
-        printf("Error: antimutator_encoding must be 0 (anti-mutator = 0) or 1 (anti-mutator = -1), got %d.\n", antimutator_encoding);
         return -1;
     }
     if (mutator_switch_rate < 0.0) {
@@ -169,25 +169,25 @@ int main(int argc, char *argv[]) {
         printf("Error: trackinterval must be at least 1 when trackindividuals is 1 (got %d).\n", trackinterval);
         return -1;
     }
+    if (checkpointinterval < 0) {
+        printf("Error: checkpointinterval must be non-negative (got %d).\n", checkpointinterval);
+        return -1;
+    }
 
     MutatorConfig mutatorconfig;
     mutatorconfig.strengthfactor         = mutator_strength_factor;
     mutatorconfig.switchrate             = mutator_switch_rate;
     mutatorconfig.bias                   = mutator_bias;
-    mutatorconfig.locusfraction          = modifier_locus_fraction;
-    mutatorconfig.maskmode               = modifier_mask_mode;
-    mutatorconfig.antimutatorencoding    = antimutator_encoding;
-    /* The integer actually stored for an anti-mutator allele. With 0 the
-     * exponent n is just the count of mutator alleles; with -1 it is the net
-     * sum (#mutators - #anti-mutators), so anti-mutators can push mu below mu0. */
-    mutatorconfig.antimutatorstate       = (antimutator_encoding == ANTIMUTATOR_AS_MINUS1) ? -1 : 0;
+    mutatorconfig.lociperchromosome      = nmodifierlociperchromosome;
     mutatorconfig.initialmutatorfraction = initial_mutator_fraction;
 
     TrackingConfig trackingconfig;
-    trackingconfig.enabled  = trackindividuals;
-    trackingconfig.interval = (trackinterval < 1) ? 1 : trackinterval;
-    trackingconfig.startgen = (trackstartgen < 1) ? 1 : trackstartgen;
+    trackingconfig.enabled            = trackindividuals;
+    trackingconfig.interval           = (trackinterval < 1) ? 1 : trackinterval;
+    trackingconfig.startgen           = (trackstartgen < 1) ? 1 : trackstartgen;
+    trackingconfig.checkpointinterval = checkpointinterval;
 
+    char iscalcfixationname[30];   /* always "OFF" in this build - see iscalcfixation above */
     char *beneficialmutationratename, *bendistname, *deldistname, *typeofrunname, *tskitstatusname, *Sb2name, *isabsolutename, *Sdname;
     beneficialmutationratename = (char *) malloc(30);
     bendistname = (char *) malloc(30);
@@ -217,7 +217,7 @@ int main(int argc, char *argv[]) {
      * --------------------------------------------------------------------- */
     gsl_rng_set(randomnumbergeneratorforgamma, (unsigned long int) randomnumberseed);
     
-    char * directoryname = MakeDirectoryName(tskitstatusname, deldistname, isabsolutename, isabsolute, bendistname, beneficialmutationratename, numberofchromosomesname, chromosomesizename, popsizename, deleteriousmutationratename, randomnumberseedname, Kname, rname, i_initname, sname, ismodular, elementsperlbname, iscalcfixationname, typeofrun, Sb2name, Sdname);
+    char * directoryname = MakeDirectoryName(tskitstatusname, deldistname, isabsolutename, isabsolute, bendistname, beneficialmutationratename, numberofchromosomesname, chromosomesizename, popsizename, deleteriousmutationratename, randomnumberseedname, ismodular, elementsperlbname, iscalcfixationname, typeofrun, Sb2name, Sdname);
     
     mkdir(directoryname, 0777);
     chdir(directoryname);
@@ -261,7 +261,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-int AssignArgumentstoVar(char **argv, int *Nxtimesteps, char *Nxtimestepsname, int *popsize, char *popsizename, double *deleteriousmutationrate, char *deleteriousmutationratename, int *chromosomesize, char *chromosomesizename, int *numberofchromosomes, char *numberofchromosomesname, double *bentodelmutrate, double *Sbtemp, int *beneficialdistribution, int *typeofrun, double *slopeforcontourline, char *slopeforcontourlinename, int *randomnumberseed, char *randomnumberseedname, int *K, char *Kname, int *relorabs, double *r, char *rname, int *i_init, char *i_initname, double *s, char *sname, int *tskitstatus, int *nonmodormod, int *elementsperlb, char *elementsperlbname, int *snapshot, char *prevsnapshotfilename, double *SdtoSbratio, char *SdtoSbrationame, int *deleteriousdistribution, int *rawdatafilesize, double *redinmaxpopsize, char *redinmaxpopsizename, int *calcfixation, double *mutator_strength_factor, char *mutator_strength_factorname, double *mutator_switch_rate, char *mutator_switch_ratename, double *mutator_bias, char *mutator_biasname, double *modifier_locus_fraction, int *modifier_mask_mode, int *antimutator_encoding, double *initial_mutator_fraction, int *trackindividuals, int *trackinterval, int *trackstartgen) {
+int AssignArgumentstoVar(char **argv, int *Nxtimesteps, char *Nxtimestepsname, int *popsize, char *popsizename, double *deleteriousmutationrate, char *deleteriousmutationratename, int *chromosomesize, char *chromosomesizename, int *numberofchromosomes, char *numberofchromosomesname, double *bentodelmutrate, double *Sbtemp, int *beneficialdistribution, int *typeofrun, double *slopeforcontourline, char *slopeforcontourlinename, int *randomnumberseed, char *randomnumberseedname, int *tskitstatus, int *nonmodormod, int *elementsperlb, char *elementsperlbname, double *SdtoSbratio, char *SdtoSbrationame, int *deleteriousdistribution, int *rawdatafilesize, double *mutator_strength_factor, char *mutator_strength_factorname, double *mutator_switch_rate, char *mutator_switch_ratename, double *mutator_bias, char *mutator_biasname, int *nmodifierlociperchromosome, double *initial_mutator_fraction, int *trackindividuals, int *trackinterval, int *trackstartgen, int *checkpointinterval) {
     
     int whicharg = 1;
     *Nxtimesteps = atoi(argv[whicharg++]); strcpy(Nxtimestepsname, argv[whicharg-1]);
@@ -275,51 +275,27 @@ int AssignArgumentstoVar(char **argv, int *Nxtimesteps, char *Nxtimestepsname, i
     *typeofrun = atoi(argv[whicharg++]);
     *slopeforcontourline = atof(argv[whicharg++]); strcpy(slopeforcontourlinename, argv[whicharg-1]);
     *randomnumberseed = atoi(argv[whicharg++]); strcpy(randomnumberseedname, argv[whicharg-1]);
-    /* --- Arguments 12, 14, 15, 16, 25 and 26 below belong to the ABSOLUTE-fitness
-     * workflow (carrying capacity, growth rate, initial i, selection coefficient,
-     * carrying-capacity reduction, fixation calculation) and to the snapshot
-     * workflow. None of them is used by the relative-fitness mutation-rate-
-     * evolution runs: main() aborts on absolute runs, and MakeDirectoryName no
-     * longer emits them. They MUST still be consumed here, because skipping an
-     * argument shifts every argument after it - that was bug 1. --- */
-    *K = atoi(argv[whicharg++]); strcpy(Kname, argv[whicharg-1]);
-    *relorabs = atoi(argv[whicharg++]);
-    *r = atof(argv[whicharg++]); strcpy(rname, argv[whicharg-1]);
-    *i_init = atoi(argv[whicharg++]); strcpy(i_initname, argv[whicharg-1]);
-    *s = atof(argv[whicharg++]); strcpy(sname, argv[whicharg-1]);
     *tskitstatus = atoi(argv[whicharg++]);
     *nonmodormod = atoi(argv[whicharg++]);
     *elementsperlb = atoi(argv[whicharg++]); strcpy(elementsperlbname, argv[whicharg-1]);
-    /* ---------------------------------------------------------------------
-     * BUG FIX: snapshot and the snapshot FILENAME are two separate command-line
-     * arguments, but this line used to read argv[whicharg-1], i.e. it re-read
-     * the snapshot flag and never consumed the filename. Every argument after
-     * this point was therefore shifted by one: SdtoSbratio was being handed the
-     * filename string (atof -> 0.0), deldist got SdtoSbratio, and so on all the
-     * way down, with mutator_bias silently never read at all.
-     * Both arguments are now consumed, one each.
-     * ------------------------------------------------------------------- */
-    *snapshot = atoi(argv[whicharg++]);
-    strcpy(prevsnapshotfilename, argv[whicharg++]);
     *SdtoSbratio = atof(argv[whicharg++]); strcpy(SdtoSbrationame, argv[whicharg-1]);
     *deleteriousdistribution = atoi(argv[whicharg++]);
     *rawdatafilesize = atoi(argv[whicharg++]);
-    *redinmaxpopsize = atof(argv[whicharg++]); strcpy(redinmaxpopsizename, argv[whicharg-1]);
-    *calcfixation = atoi(argv[whicharg++]);
+
+    /* --- mutation-rate evolution (see sharedfunc_flag.h for the semantics) --- */
     *mutator_strength_factor = atof(argv[whicharg++]); strcpy(mutator_strength_factorname, argv[whicharg-1]);
     *mutator_switch_rate = atof(argv[whicharg++]); strcpy(mutator_switch_ratename, argv[whicharg-1]);
     *mutator_bias = atof(argv[whicharg++]); strcpy(mutator_biasname, argv[whicharg-1]);
-
-    /* --- modifier-locus model (see sharedfunc_flag.h for the semantics) --- */
-    *modifier_locus_fraction  = atof(argv[whicharg++]);
-    *modifier_mask_mode       = atoi(argv[whicharg++]);
-    *antimutator_encoding     = atoi(argv[whicharg++]);
-    *initial_mutator_fraction = atof(argv[whicharg++]);
+    *nmodifierlociperchromosome = atoi(argv[whicharg++]);
+    *initial_mutator_fraction   = atof(argv[whicharg++]);
 
     /* --- optional detailed per-individual tracking output ---------------- */
     *trackindividuals = atoi(argv[whicharg++]);
     *trackinterval    = atoi(argv[whicharg++]);
     *trackstartgen    = atoi(argv[whicharg++]);
+
+    /* --- restart checkpoint (RESERVED: parsed and validated, not yet acted on) */
+    *checkpointinterval = atoi(argv[whicharg++]);
 
     return 1;
 }
@@ -692,7 +668,7 @@ double BisectionMethodToFindSbWithZeroSlope(int tskitstatus, bool isabsolute, bo
 }
  * ------------------------------------------------------------------------- */
 
-char * MakeDirectoryName(char * tskitstatus, char* deldist, char * isabsolutename, bool isabsolute, char * bendist, char * benmut, char * numberofchromosomes, char * chromosomesize, char * popsize, char * delmut, char * randomnumberseed, char * K, char * r, char *i_init, char * s, bool ismodular, char *elementsperlb, char *iscalcfixationname, int typeofrun, char * Sbname, char *Sdname) 
+char * MakeDirectoryName(char * tskitstatus, char* deldist, char * isabsolutename, bool isabsolute, char * bendist, char * benmut, char * numberofchromosomes, char * chromosomesize, char * popsize, char * delmut, char * randomnumberseed, bool ismodular, char *elementsperlb, char *iscalcfixationname, int typeofrun, char * Sbname, char *Sdname) 
 {
 	
 	char * directoryname = (char *) malloc(400);
@@ -712,8 +688,9 @@ char * MakeDirectoryName(char * tskitstatus, char* deldist, char * isabsolutenam
      * already unreachable: main() aborts on absolute runs, so isabsolute is
      * always false by the time this is called, and these fields never appeared
      * in any directory name produced by this build. Commenting it therefore
-     * changes no output. The r / i_init / s / K / ismodular / elementsperlb
-     * parameters of this function are consequently unused.
+     * changes no output. The r / i_init / s / K parameters have therefore been
+     * removed from this function's signature entirely; ismodular and
+     * elementsperlb remain but are unused.
     if(isabsolute){
         strcat(directoryname, "_r_");
         strcat(directoryname, r);

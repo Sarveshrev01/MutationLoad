@@ -23,96 +23,92 @@
 #include <tskit/trees.h>
 
 /* =========================================================================
- * DrawModifierMask
+ * DrawModifierLocusPositions
  * =========================================================================
  * Chooses which linkage blocks carry a modifier locus.
  *
- * EXACTLY round(locusfraction * haploidgenomelength) blocks are chosen,
- * uniformly at random and without replacement, via a partial Fisher-Yates
- * shuffle. Using an exact count (rather than an independent coin flip per
- * block) means the NUMBER of modifier loci is fixed by the parameter, so runs
- * that differ only in random seed are directly comparable.
+ * EXACTLY lociperchromosome distinct blocks are drawn ON EACH CHROMOSOME,
+ * uniformly at random and without replacement within that chromosome, via a
+ * partial Fisher-Yates shuffle. Drawing per chromosome rather than across the
+ * whole genome guarantees every linkage group carries the same number of
+ * modifier loci, which is what makes the linkage structure comparable between
+ * chromosomes; drawing globally would leave some chromosomes with none.
  *
- * The mask is haploid-length. How it is used depends on mutatorconfig.maskmode:
- *   MODIFIERMASK_GLOBAL    - one mask for the whole run, mirrored across both
- *                            homologs of every individual.
- *   MODIFIERMASK_INHERITED - this is called once per founder individual, and
- *                            the result is mirrored across that individual's
- *                            two homologs and thereafter inherited.
+ * Positions are HAPLOID block indices in [0, chromosomesize*numberofchromosomes),
+ * returned in ascending order so downstream sweeps are cache-friendly. The set is
+ * fixed for the whole run and shared by every individual and both homologs, so
+ * no per-individual mask is stored anywhere.
+ *
+ * Returns the total number of modifier loci drawn.
  * ========================================================================= */
-void DrawModifierMask(char *mask, int haploidgenomelength, double locusfraction)
+int DrawModifierLocusPositions(int *positions, int chromosomesize, int numberofchromosomes, int lociperchromosome)
 {
-    int i, numbertochoose, pick, temp;
-    int *positions;
+    int h, i, pick, temp, total = 0;
+    int *scratch;
 
-    for (i = 0; i < haploidgenomelength; i++) mask[i] = 0;
+    if (lociperchromosome <= 0) return 0;
 
-    if (locusfraction <= 0.0) return;
-
-    numbertochoose = (int) floor(locusfraction * (double) haploidgenomelength + 0.5);
-    if (numbertochoose < 0) numbertochoose = 0;
-    if (numbertochoose > haploidgenomelength) numbertochoose = haploidgenomelength;
-    if (numbertochoose == 0) return;
-
-    positions = malloc(sizeof(int) * haploidgenomelength);
-    for (i = 0; i < haploidgenomelength; i++) positions[i] = i;
-
-    for (i = 0; i < numbertochoose; i++) {
-        pick = i + (int) pcg32_boundedrand((uint32_t)(haploidgenomelength - i));
-        temp = positions[pick];
-        positions[pick] = positions[i];
-        positions[i] = temp;
-        mask[positions[i]] = 1;
+    scratch = malloc(sizeof(int) * chromosomesize);
+    for (h = 0; h < numberofchromosomes; h++) {
+        for (i = 0; i < chromosomesize; i++) scratch[i] = h*chromosomesize + i;
+        for (i = 0; i < lociperchromosome; i++) {
+            pick = i + (int) pcg32_boundedrand((uint32_t)(chromosomesize - i));
+            temp = scratch[pick];
+            scratch[pick] = scratch[i];
+            scratch[i] = temp;
+        }
+        /* keep the chosen ones, then sort this chromosome's block ascending */
+        for (i = 0; i < lociperchromosome; i++) positions[total + i] = scratch[i];
+        for (i = 1; i < lociperchromosome; i++) {
+            int k = i, v = positions[total + i];
+            while (k > 0 && positions[total + k - 1] > v) { positions[total + k] = positions[total + k - 1]; k--; }
+            positions[total + k] = v;
+        }
+        total += lociperchromosome;
     }
-    free(positions);
+    free(scratch);
+    return total;
 }
 
 /* =========================================================================
  * SeedInitialMutatorStates
  * =========================================================================
- * Fills one HAPLOID state array from a haploid modifier mask.
+ * Fills one HAPLOID state array from the shared modifier-locus position list.
  *
- *   - a block with no modifier locus is set to 0 and can never change;
- *   - exactly round(initialmutatorfraction * m) of the m modifier loci are set
- *     to +1 (mutator), chosen uniformly at random without replacement;
- *   - every other modifier locus is set to antimutatorstate (0 or -1, per the
- *     antimutator_encoding argument).
+ *   - every block that is NOT a modifier locus is set to 0 and can never change;
+ *   - exactly round(initialmutatorfraction * nmodifierloci) modifier loci are
+ *     set to +1 (mutator), chosen uniformly at random without replacement;
+ *   - every other modifier locus is set to -1 (anti-mutator).
+ *
+ * The caller applies the result to every haplotype in the founding population,
+ * so the population starts monomorphic at every modifier locus and all later
+ * variation is generated by the simulation itself.
  * ========================================================================= */
-void SeedInitialMutatorStates(int *stateshaploid, const char *mask, int haploidgenomelength, double initialmutatorfraction, int antimutatorstate)
+void SeedInitialMutatorStates(int *stateshaploid, const int *positions, int nmodifierloci, int haploidgenomelength, double initialmutatorfraction)
 {
-    int i, nmodifier = 0, numbertochoose, pick, temp;
-    int *modifierpositions;
+    int i, numbertochoose, pick, temp;
+    int *shuffled;
 
-    for (i = 0; i < haploidgenomelength; i++) {
-        if (mask[i]) {
-            stateshaploid[i] = antimutatorstate;
-            nmodifier++;
-        } else {
-            stateshaploid[i] = 0;   /* non-modifier block: permanently inert */
-        }
-    }
+    for (i = 0; i < haploidgenomelength; i++) stateshaploid[i] = 0;   /* non-modifier: inert */
+    for (i = 0; i < nmodifierloci; i++) stateshaploid[positions[i]] = -1;  /* anti-mutator */
 
-    if (nmodifier == 0 || initialmutatorfraction <= 0.0) return;
+    if (nmodifierloci == 0 || initialmutatorfraction <= 0.0) return;
 
-    numbertochoose = (int) floor(initialmutatorfraction * (double) nmodifier + 0.5);
+    numbertochoose = (int) floor(initialmutatorfraction * (double) nmodifierloci + 0.5);
     if (numbertochoose < 0) numbertochoose = 0;
-    if (numbertochoose > nmodifier) numbertochoose = nmodifier;
+    if (numbertochoose > nmodifierloci) numbertochoose = nmodifierloci;
     if (numbertochoose == 0) return;
 
-    modifierpositions = malloc(sizeof(int) * nmodifier);
-    nmodifier = 0;
-    for (i = 0; i < haploidgenomelength; i++) {
-        if (mask[i]) modifierpositions[nmodifier++] = i;
-    }
-
+    shuffled = malloc(sizeof(int) * nmodifierloci);
+    for (i = 0; i < nmodifierloci; i++) shuffled[i] = positions[i];
     for (i = 0; i < numbertochoose; i++) {
-        pick = i + (int) pcg32_boundedrand((uint32_t)(nmodifier - i));
-        temp = modifierpositions[pick];
-        modifierpositions[pick] = modifierpositions[i];
-        modifierpositions[i] = temp;
-        stateshaploid[modifierpositions[i]] = 1;
+        pick = i + (int) pcg32_boundedrand((uint32_t)(nmodifierloci - i));
+        temp = shuffled[pick];
+        shuffled[pick] = shuffled[i];
+        shuffled[i] = temp;
+        stateshaploid[shuffled[i]] = 1;
     }
-    free(modifierpositions);
+    free(shuffled);
 }
 
 /* =========================================================================
@@ -141,43 +137,42 @@ void SeedTreeSequenceTables(tsk_table_collection_t * treesequencetablecollection
 }
 
 /* =========================================================================
- * WritePopulationModifierSummary   (item 5)
+ * WritePopulationModifierSummary
  * =========================================================================
  * Appends the mutation-rate-evolution columns to one row of the raw data file.
  * The caller has already written the leading columns and writes the newline.
+ *
+ * With a fixed, shared set of modifier loci, the number of modifier SLOTS is the
+ * run-level constant M = 2 * nmodifierloci, identical for every individual. The
+ * per-individual mutator count is therefore not stored and is derived:
+ *
+ *      mutatorCount = (M + n) / 2        where n = netModifierSum
+ *      mutator freq = mutatorCount / M = (1 + n/M) / 2
  *
  * Columns appended, in order:
  *   Mean.deleterious.mutation.rate   mean over individuals of mu_d0 * f^n
  *   Mean.beneficial.mutation.rate    mean over individuals of mu_b0 * f^n
  *   Mean.net.modifier.sum            mean over individuals of n
- *   Mean.mutator.freq.perindividual  mean over individuals of (that individual's
- *                                    mutator alleles / its modifier slots)
+ *   Mean.mutator.freq.perindividual  mean over individuals of that individual's
+ *                                    mutator frequency
  *   Var.mutator.freq.acrossindividuals   variance of the quantity above
- *   Mean.mutator.freq.perlocus       mean over LOCI of (mutator alleles at that
- *                                    locus / modifier slots at that locus,
- *                                    pooled over both homologs and all individuals)
+ *   Mean.mutator.freq.perlocus       mean over MODIFIER LOCI of the +1 frequency
+ *                                    at that locus, pooled over both homologs
  *   Var.mutator.freq.acrossloci      variance of the quantity above
  *
- * The two "per individual" columns and the two "per locus" columns answer
- * different questions: the first pair measures how much individuals differ from
- * each other in mutator load; the second is the classic site-frequency view and
- * measures how much the individual modifier loci differ from each other.
- *
- * locusmutatorcounts and locusmodifiercounts are caller-owned scratch buffers of
- * haploid genome length, passed in so they are not reallocated every generation.
- * The per-locus pass is O(popsize x haploid genome length); that is negligible
- * next to the O(popsize x genome length) recombination work already done every
- * single timestep, of which there are popsize per generation.
+ * The per-locus pass now visits only the nmodifierloci modifier positions rather
+ * than every block, so it costs O(popsize * nmodifierloci) instead of
+ * O(popsize * haploid genome length) - a factor of chromosomesize/lociperchromosome.
  * ========================================================================= */
-void WritePopulationModifierSummary(FILE *rawdatafilepointer, Individual *wholepopulation, int popsize, int totalindividualgenomelength, const char *globalmodifiermask, int *locusmutatorcounts, int *locusmodifiercounts)
+void WritePopulationModifierSummary(FILE *rawdatafilepointer, Individual *wholepopulation, int popsize, int totalindividualgenomelength, const int *modifierlocuspositions, int nmodifierloci, int *locusmutatorcounts)
 {
     int i, j;
     int halfgenome = totalindividualgenomelength / 2;
+    int nmodifierslots = 2 * nmodifierloci;
     double sumdelrate = 0.0, sumbenrate = 0.0, sumnet = 0.0;
     double sumfreq = 0.0, sumfreqsquared = 0.0;
     double meandelrate, meanbenrate, meannet, meanfreqind, varfreqind;
     double meanfreqlocus = 0.0, varfreqlocus = 0.0;
-    int nlociwithmodifiers = 0;
     double locussum = 0.0, locussumsquared = 0.0;
 
     /* ---- per-individual pass ---- */
@@ -186,8 +181,8 @@ void WritePopulationModifierSummary(FILE *rawdatafilepointer, Individual *wholep
         sumdelrate += wholepopulation[i].mutationRate;
         sumbenrate += wholepopulation[i].beneficialMutationRate;
         sumnet     += (double) wholepopulation[i].netModifierSum;
-        freq = (wholepopulation[i].modifierCount > 0)
-             ? ((double) wholepopulation[i].mutatorCount / (double) wholepopulation[i].modifierCount)
+        freq = (nmodifierslots > 0)
+             ? (1.0 + (double) wholepopulation[i].netModifierSum / (double) nmodifierslots) / 2.0
              : 0.0;
         sumfreq        += freq;
         sumfreqsquared += freq * freq;
@@ -199,42 +194,23 @@ void WritePopulationModifierSummary(FILE *rawdatafilepointer, Individual *wholep
     varfreqind  = (sumfreqsquared / (double) popsize) - (meanfreqind * meanfreqind);
     if (varfreqind < 0.0) varfreqind = 0.0;   /* guard against round-off */
 
-    /* ---- per-locus pass ---- */
-    for (j = 0; j < halfgenome; j++) {
-        locusmutatorcounts[j] = 0;
-        locusmodifiercounts[j] = 0;
-    }
-    for (i = 0; i < popsize; i++) {
-        for (j = 0; j < halfgenome; j++) {
-            int ismodifierA, ismodifierB;
-            if (globalmodifiermask != NULL) {
-                ismodifierA = globalmodifiermask[j];
-                ismodifierB = globalmodifiermask[j];
-            } else {
-                ismodifierA = wholepopulation[i].modifierMask[j];
-                ismodifierB = wholepopulation[i].modifierMask[halfgenome + j];
-            }
-            if (ismodifierA) {
-                locusmodifiercounts[j]++;
-                if (wholepopulation[i].mutatorArray[j] == 1) locusmutatorcounts[j]++;
-            }
-            if (ismodifierB) {
-                locusmodifiercounts[j]++;
-                if (wholepopulation[i].mutatorArray[halfgenome + j] == 1) locusmutatorcounts[j]++;
+    /* ---- per-locus pass: only the modifier positions ---- */
+    if (nmodifierloci > 0) {
+        for (j = 0; j < nmodifierloci; j++) locusmutatorcounts[j] = 0;
+        for (i = 0; i < popsize; i++) {
+            for (j = 0; j < nmodifierloci; j++) {
+                int pos = modifierlocuspositions[j];
+                if (wholepopulation[i].mutatorArray[pos] == 1) locusmutatorcounts[j]++;
+                if (wholepopulation[i].mutatorArray[halfgenome + pos] == 1) locusmutatorcounts[j]++;
             }
         }
-    }
-    for (j = 0; j < halfgenome; j++) {
-        if (locusmodifiercounts[j] > 0) {
-            double f = (double) locusmutatorcounts[j] / (double) locusmodifiercounts[j];
+        for (j = 0; j < nmodifierloci; j++) {
+            double f = (double) locusmutatorcounts[j] / (double) (2 * popsize);
             locussum += f;
             locussumsquared += f * f;
-            nlociwithmodifiers++;
         }
-    }
-    if (nlociwithmodifiers > 0) {
-        meanfreqlocus = locussum / (double) nlociwithmodifiers;
-        varfreqlocus  = (locussumsquared / (double) nlociwithmodifiers) - (meanfreqlocus * meanfreqlocus);
+        meanfreqlocus = locussum / (double) nmodifierloci;
+        varfreqlocus  = (locussumsquared / (double) nmodifierloci) - (meanfreqlocus * meanfreqlocus);
         if (varfreqlocus < 0.0) varfreqlocus = 0.0;
     }
 
@@ -243,25 +219,30 @@ void WritePopulationModifierSummary(FILE *rawdatafilepointer, Individual *wholep
 }
 
 /* =========================================================================
- * WriteIndividualSnapshot   (item 5, optional detailed tracking)
+ * WriteIndividualSnapshot   (optional detailed tracking)
  * =========================================================================
- * Dumps one row per individual. Controlled entirely by TrackingConfig, which is
- * off by default because at popsize = 20000 each firing writes 20000 rows.
+ * One row per individual. Off by default: each firing writes popsize rows.
+ * MutatorAlleleCount and AntiMutatorAlleleCount are derived from the net sum and
+ * the run-level constant number of modifier slots.
  * ========================================================================= */
-void WriteIndividualSnapshot(FILE *individualfilepointer, Individual *wholepopulation, int popsize, int generation)
+void WriteIndividualSnapshot(FILE *individualfilepointer, Individual *wholepopulation, int popsize, int generation, int nmodifierslots)
 {
     int k;
     for (k = 0; k < popsize; k++) {
-        fprintf(individualfilepointer, "%d,%d,%.12g,%.12g,%.12g,%.12g,%d,%d,%d\n",
+        int n = wholepopulation[k].netModifierSum;
+        int mutators     = (nmodifierslots + n) / 2;
+        int antimutators = (nmodifierslots - n) / 2;
+        fprintf(individualfilepointer, "%d,%d,%.12g,%.12Lg,%.12g,%.12g,%d,%d,%d,%d\n",
                 generation,
                 k + 1,
                 wholepopulation[k].fitness,
-                log(wholepopulation[k].fitness),
+                wholepopulation[k].logFitness,
                 wholepopulation[k].mutationRate,
                 wholepopulation[k].beneficialMutationRate,
-                wholepopulation[k].mutatorCount,
-                wholepopulation[k].modifierCount,
-                wholepopulation[k].netModifierSum);
+                mutators,
+                antimutators,
+                nmodifierslots,
+                n);
     }
 }
 
@@ -310,9 +291,8 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     /* modifier-locus settings, so runs differing only in those do not collide */
     {
         char modifiertag[120];
-        snprintf(modifiertag, sizeof(modifiertag), "mlf%g_imf%g_mm%d_ae%d",
-                 mutatorconfig.locusfraction, mutatorconfig.initialmutatorfraction,
-                 mutatorconfig.maskmode, mutatorconfig.antimutatorencoding);
+        snprintf(modifiertag, sizeof(modifiertag), "nmodperchrom%d_imf%g",
+                 mutatorconfig.lociperchromosome, mutatorconfig.initialmutatorfraction);
         strcat(rawdatafilename, modifiertag);
     }
     strcat(rawdatafilename, ".txt");
@@ -349,12 +329,13 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     wholepopulation = malloc(sizeof(Individual) * popsize);
     // Note: Initialization of internal arrays happens in InitializePopulationRel
 
-    /* The shared modifier mask. In MODIFIERMASK_GLOBAL mode this is THE mask and
-     * is passed down everywhere. In MODIFIERMASK_INHERITED mode every individual
-     * carries its own copy instead, and every consumer is handed NULL so that it
-     * knows to look at Individual.modifierMask. */
-    char *globalmodifiermask = malloc(sizeof(char) * haploidgenomelength);
-    const char *effectiveglobalmask = (mutatorconfig.maskmode == MODIFIERMASK_GLOBAL) ? globalmodifiermask : NULL;
+    /* The shared modifier-locus positions: one haploid index per modifier locus,
+     * fixed for the whole run and identical for every individual and both
+     * homologs. Filled by InitializePopulationRel. Used for initialisation and
+     * for the per-locus statistics; the per-birth path does not need it, because
+     * the state array is self-describing (mutatorArray[i] != 0). */
+    int *modifierlocuspositions = malloc(sizeof(int) * haploidgenomelength);
+    int nmodifierloci = 0;
     
     long double sumofwis;
     long double *psumofwis = &sumofwis;
@@ -378,22 +359,30 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     sortedwisarray = malloc(sizeof(long double) * popsize);
      * ------------------------------------------------------------------- */
 
-    /* Scratch buffers for the per-locus mutator-frequency statistics, allocated
-     * once instead of every generation. */
-    int *locusmutatorcounts  = malloc(sizeof(int) * haploidgenomelength);
-    int *locusmodifiercounts = malloc(sizeof(int) * haploidgenomelength);
+    /* Scratch buffer for the per-locus mutator-frequency statistics, allocated
+     * once instead of every generation. Only nmodifierloci entries are used, but
+     * it is sized for the worst case so it can be allocated before the draw. */
+    int *locusmutatorcounts = malloc(sizeof(int) * haploidgenomelength);
 
-    InitializePopulationRel(tskitstatus, &treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, wholepopulationwistree, wholepopulation, popsize, totalpopulationgenomelength, totaltimesteps, psumofwis, globalmodifiermask, mutatorconfig, miscfilepointer);
-    
-    // Set initial mutation rates for population based on their starting modifier states
+    InitializePopulationRel(tskitstatus, &treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, wholepopulationwistree, wholepopulation, popsize, totalpopulationgenomelength, chromosomesize, numberofchromosomes, totaltimesteps, psumofwis, modifierlocuspositions, &nmodifierloci, mutatorconfig, miscfilepointer);
+
+    int nmodifierslots = 2 * nmodifierloci;
+
+    // Prime logFitness, netModifierSum and both rates from the arrays. This is the
+    // only full O(2L) sweep per individual in the whole run; from here on both
+    // summary values are carried incrementally through recombination and mutation.
     for(k = 0; k < popsize; k++) {
-        UpdateIndividual(&wholepopulation[k], totalindividualgenomelength, effectiveglobalmask, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
+        RecomputeIndividualFromArrays(&wholepopulation[k], totalindividualgenomelength, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
     }
 
-    fprintf(miscfilepointer, "Modifier-locus setup: maskmode=%d (0=global,1=inherited), locusfraction=%g, modifier loci per haplotype=%d, antimutator state=%d, initial mutator fraction=%g, f=%g, switch rate=%g, bias=%g\n",
-            mutatorconfig.maskmode, mutatorconfig.locusfraction, wholepopulation[0].modifierCount / 2,
-            mutatorconfig.antimutatorstate, mutatorconfig.initialmutatorfraction,
+    fprintf(miscfilepointer, "Modifier-locus setup: %d loci per chromosome x %d chromosomes = %d modifier loci per haplotype (%d diploid slots); initial mutator fraction=%g; f=%g; switch rate=%g; bias=%g\n",
+            mutatorconfig.lociperchromosome, numberofchromosomes, nmodifierloci, nmodifierslots,
+            mutatorconfig.initialmutatorfraction,
             mutatorconfig.strengthfactor, mutatorconfig.switchrate, mutatorconfig.bias);
+    /* Echo the DERIVED effect sizes explicitly. Sd is not given directly on the
+     * command line; it is Sb * SdtoSbratio, which has surprised us before. */
+    fprintf(miscfilepointer, "Effect sizes: Sb=%g (bendist=%d), Sd=%g (deldist=%d)\n", Sb, beneficialdistribution, Sd, deleteriousdistribution);
+    fprintf(miscfilepointer, "Baseline rates: mu_deleterious=%g, mu_beneficial=%g\n", deleteriousmutationrate, beneficialmutationrate);
     fflush(miscfilepointer);
 
     /* Optional per-individual tracking file (item 5). */
@@ -407,7 +396,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
         strcat(individualfilename, "mb"); strcat(individualfilename, mutator_biasname);
         strcat(individualfilename, ".txt");
         individualfilepointer = fopen(individualfilename, "w");
-        fprintf(individualfilepointer, "Generation,Individual,Wi,LogWi,DeleteriousMutationRate,BeneficialMutationRate,MutatorAlleleCount,ModifierLocusCount,NetModifierSum\n");
+        fprintf(individualfilepointer, "Generation,Individual,Wi,LogWi,DeleteriousMutationRate,BeneficialMutationRate,MutatorAlleleCount,AntiMutatorAlleleCount,ModifierSlots,NetModifierSum\n");
         free(individualfilename);
     }
     
@@ -418,25 +407,23 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     double parent1gameteFitness[numberofchromosomes*chromosomesize], parent2gameteFitness[numberofchromosomes*chromosomesize];
     int parent1gameteMutators[numberofchromosomes*chromosomesize], parent2gameteMutators[numberofchromosomes*chromosomesize];
 
-    /* Gamete-level modifier-mask buffers. Only needed in inherited-mask mode;
-     * NULL otherwise so nothing is copied and nothing is spent. */
-    char *parent1gameteMask = NULL, *parent2gameteMask = NULL;
-    if (mutatorconfig.maskmode == MODIFIERMASK_INHERITED) {
-        parent1gameteMask = malloc(sizeof(char) * haploidgenomelength);
-        parent2gameteMask = malloc(sizeof(char) * haploidgenomelength);
-    }
-
-    /* Modifier-locus indices, rebuilt for each gamete during recombination and
-     * consumed by the switching step. See SwitchModifierLoci in sharedfunc_flag.c. */
-    ModifierLocusIndex parent1modifierindex, parent2modifierindex;
-    parent1modifierindex.mutatorpositions     = malloc(sizeof(int) * haploidgenomelength);
-    parent1modifierindex.antimutatorpositions = malloc(sizeof(int) * haploidgenomelength);
-    parent1modifierindex.nmutatorpositions = 0;
-    parent1modifierindex.nantimutatorpositions = 0;
-    parent2modifierindex.mutatorpositions     = malloc(sizeof(int) * haploidgenomelength);
-    parent2modifierindex.antimutatorpositions = malloc(sizeof(int) * haploidgenomelength);
-    parent2modifierindex.nmutatorpositions = 0;
-    parent2modifierindex.nantimutatorpositions = 0;
+    /* Per-gamete state: the two modifier-position lists plus the running
+     * log-fitness and modifier sums. Rebuilt from scratch by
+     * RecombineChromosomesIntoGamete, updated by MutateGamete and
+     * SwitchModifierLoci, consumed by PerformBirth. No mask is carried. */
+    GameteState parent1state, parent2state;
+    parent1state.mutatorpositions     = malloc(sizeof(int) * haploidgenomelength);
+    parent1state.antimutatorpositions = malloc(sizeof(int) * haploidgenomelength);
+    parent1state.nmutatorpositions = 0;
+    parent1state.nantimutatorpositions = 0;
+    parent1state.logfitnesssum = 0.0;
+    parent1state.modifiersum = 0;
+    parent2state.mutatorpositions     = malloc(sizeof(int) * haploidgenomelength);
+    parent2state.antimutatorpositions = malloc(sizeof(int) * haploidgenomelength);
+    parent2state.nmutatorpositions = 0;
+    parent2state.nantimutatorpositions = 0;
+    parent2state.logfitnesssum = 0.0;
+    parent2state.modifiersum = 0;
     
     size_t step = 1;
     double *last200Ntimestepsvariance;
@@ -485,7 +472,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     for (i = 0; i < Nxtimesteps; i++) {
         for (j = 0; j < popsize; j++) {
             currenttimestep += 1.0;            
-            PerformOneTimeStepRel(istskitrecording, isabsolute, isburninphaseover, ismodular, elementsperlb, &treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, popsize, totaltimesteps, currenttimestep, wholepopulationwistree, wholepopulation, psumofwis, chromosomesize, numberofchromosomes, totalindividualgenomelength, deleteriousmutationrate, beneficialmutationrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent1gameteFitness, parent1gameteMutators, parent1gameteMask, &parent1modifierindex, parent2gameteFitness, parent2gameteMutators, parent2gameteMask, &parent2modifierindex, effectiveglobalmask, randomnumbergeneratorforgamma, miscfilepointer, mutatorconfig);  
+            PerformOneTimeStepRel(istskitrecording, isabsolute, isburninphaseover, ismodular, elementsperlb, &treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, popsize, totaltimesteps, currenttimestep, wholepopulationwistree, wholepopulation, psumofwis, chromosomesize, numberofchromosomes, totalindividualgenomelength, deleteriousmutationrate, beneficialmutationrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent1gameteFitness, parent1gameteMutators, &parent1state, parent2gameteFitness, parent2gameteMutators, &parent2state, randomnumbergeneratorforgamma, miscfilepointer, mutatorconfig);  
         }
         
         varianceinlogfitness = CalculateVarianceInLogFitness(popsize, wholepopulation, *psumofwis);
@@ -494,7 +481,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
         FractionSelectiveDeaths_exponantiatebirthrates = (exp(fitnessfittest)-exp((sumofwis/popsize)))/exp(fitnessfittest);
         
         fprintf(rawdatafilepointer, "%d,%Lf,%.18f,%Lf,%Lf", i+1, *psumofwis, varianceinlogfitness, FractionSelectiveDeaths, FractionSelectiveDeaths_exponantiatebirthrates);
-        WritePopulationModifierSummary(rawdatafilepointer, wholepopulation, popsize, totalindividualgenomelength, effectiveglobalmask, locusmutatorcounts, locusmodifiercounts);
+        WritePopulationModifierSummary(rawdatafilepointer, wholepopulation, popsize, totalindividualgenomelength, modifierlocuspositions, nmodifierloci, locusmutatorcounts);
         fprintf(rawdatafilepointer, "\n");
         fflush(rawdatafilepointer);
 
@@ -505,7 +492,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
             int generation = i + 1;
             if (generation >= trackingconfig.startgen &&
                 ((generation - trackingconfig.startgen) % trackingconfig.interval) == 0) {
-                WriteIndividualSnapshot(individualfilepointer, wholepopulation, popsize, generation);
+                WriteIndividualSnapshot(individualfilepointer, wholepopulation, popsize, generation, nmodifierslots);
                 fflush(individualfilepointer);
             }
         }
@@ -628,18 +615,15 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
         for(k=0; k<popsize; k++){
             free(wholepopulation[k].fitnessArray);
             free(wholepopulation[k].mutatorArray);
-            if (wholepopulation[k].modifierMask != NULL) free(wholepopulation[k].modifierMask);
         }
         free(wholepopulation);
         free(wholepopulationwistree);
         free(wholepopulationnodesarray);
         /* free(sortedwisarray);  - see the commented-out allocation above (item 10) */
-        free(globalmodifiermask);
-        free(locusmutatorcounts); free(locusmodifiercounts);
-        if (parent1gameteMask != NULL) free(parent1gameteMask);
-        if (parent2gameteMask != NULL) free(parent2gameteMask);
-        free(parent1modifierindex.mutatorpositions); free(parent1modifierindex.antimutatorpositions);
-        free(parent2modifierindex.mutatorpositions); free(parent2modifierindex.antimutatorpositions);
+        free(modifierlocuspositions);
+        free(locusmutatorcounts);
+        free(parent1state.mutatorpositions); free(parent1state.antimutatorpositions);
+        free(parent2state.mutatorpositions); free(parent2state.antimutatorpositions);
         tsk_table_collection_free(&treesequencetablecollection);
         return slopeoflogfitness;
     }
@@ -654,18 +638,15 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
         for(k=0; k<popsize; k++){
             free(wholepopulation[k].fitnessArray);
             free(wholepopulation[k].mutatorArray);
-            if (wholepopulation[k].modifierMask != NULL) free(wholepopulation[k].modifierMask);
         }
         free(wholepopulation);
         free(wholepopulationwistree);
         free(wholepopulationnodesarray);
         /* free(sortedwisarray);  - see the commented-out allocation above (item 10) */
-        free(globalmodifiermask);
-        free(locusmutatorcounts); free(locusmodifiercounts);
-        if (parent1gameteMask != NULL) free(parent1gameteMask);
-        if (parent2gameteMask != NULL) free(parent2gameteMask);
-        free(parent1modifierindex.mutatorpositions); free(parent1modifierindex.antimutatorpositions);
-        free(parent2modifierindex.mutatorpositions); free(parent2modifierindex.antimutatorpositions);
+        free(modifierlocuspositions);
+        free(locusmutatorcounts);
+        free(parent1state.mutatorpositions); free(parent1state.antimutatorpositions);
+        free(parent2state.mutatorpositions); free(parent2state.antimutatorpositions);
         tsk_table_collection_free(&treesequencetablecollection);
         return -1.0;
     }
@@ -673,7 +654,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     return -1.0;   /* unreachable; silences -Wreturn-type */
 }
 
-void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t *treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, int popsize, int totaltimesteps, double currenttimestep, long double *wholepopulationwistree, Individual *wholepopulation, long double * psumofwis, int chromosomesize, int numberofchromosomes, int totalindividualgenomelength, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, double *parent1gameteFitness, int *parent1gameteMutators, char *parent1gameteMask, ModifierLocusIndex *parent1modifierindex, double *parent2gameteFitness, int *parent2gameteMutators, char *parent2gameteMask, ModifierLocusIndex *parent2modifierindex, const char *globalmodifiermask, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, MutatorConfig mutatorconfig)
+void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t *treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, int popsize, int totaltimesteps, double currenttimestep, long double *wholepopulationwistree, Individual *wholepopulation, long double * psumofwis, int chromosomesize, int numberofchromosomes, int totalindividualgenomelength, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, double *parent1gameteFitness, int *parent1gameteMutators, GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, GameteState *parent2state, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, MutatorConfig mutatorconfig)
 {
     /* NOTE (item 7): RunSimulationRel passes its istskitrecording flag in the
      * tskitstatus slot, so everything below records only when recording is
@@ -691,7 +672,7 @@ void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseov
     
     tsk_id_t childnode1, childnode2;
    
-    RecombineChromosomesIntoGamete(isabsolute, tskitstatus, ismodular, elementsperlb, isburninphaseover, treesequencetablecollection, wholepopulationnodesarray, &childnode1, totaltimesteps, currenttimestep, currentparent1, chromosomesize, numberofchromosomes, parent1gameteFitness, parent1gameteMutators, parent1gameteMask, globalmodifiermask, parent1modifierindex, wholepopulation, totalindividualgenomelength);
+    RecombineChromosomesIntoGamete(isabsolute, tskitstatus, ismodular, elementsperlb, isburninphaseover, treesequencetablecollection, wholepopulationnodesarray, &childnode1, totaltimesteps, currenttimestep, currentparent1, chromosomesize, numberofchromosomes, parent1gameteFitness, parent1gameteMutators, parent1state, wholepopulation, totalindividualgenomelength);
     
     /* Both rates come from the PARENT, because the mutations in this gamete
      * arise in the parent's germ line. Item 8: the beneficial rate is now scaled
@@ -699,14 +680,14 @@ void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseov
     double p1_delrate = wholepopulation[currentparent1].mutationRate;
     double p1_benrate = wholepopulation[currentparent1].beneficialMutationRate;
     
-    ProduceMutatedGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, &childnode1, totaltimesteps, currenttimestep, currentparent1, isabsolute, totalindividualgenomelength, p1_delrate, p1_benrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent1gameteFitness, parent1gameteMutators, parent1modifierindex, mutatorconfig.antimutatorstate, mutatorconfig.switchrate, mutatorconfig.bias, randomnumbergeneratorforgamma, miscfilepointer);
+    ProduceMutatedGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, &childnode1, totaltimesteps, currenttimestep, currentparent1, isabsolute, totalindividualgenomelength, p1_delrate, p1_benrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent1gameteFitness, parent1gameteMutators, parent1state, mutatorconfig.switchrate, mutatorconfig.bias, randomnumbergeneratorforgamma, miscfilepointer);
         
-    RecombineChromosomesIntoGamete(isabsolute, tskitstatus, ismodular, elementsperlb, isburninphaseover, treesequencetablecollection, wholepopulationnodesarray, &childnode2, totaltimesteps, currenttimestep, currentparent2, chromosomesize, numberofchromosomes, parent2gameteFitness, parent2gameteMutators, parent2gameteMask, globalmodifiermask, parent2modifierindex, wholepopulation, totalindividualgenomelength);
+    RecombineChromosomesIntoGamete(isabsolute, tskitstatus, ismodular, elementsperlb, isburninphaseover, treesequencetablecollection, wholepopulationnodesarray, &childnode2, totaltimesteps, currenttimestep, currentparent2, chromosomesize, numberofchromosomes, parent2gameteFitness, parent2gameteMutators, parent2state, wholepopulation, totalindividualgenomelength);
     
     double p2_delrate = wholepopulation[currentparent2].mutationRate;
     double p2_benrate = wholepopulation[currentparent2].beneficialMutationRate;
     
-    ProduceMutatedGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, &childnode2, totaltimesteps, currenttimestep, currentparent2, isabsolute, totalindividualgenomelength, p2_delrate, p2_benrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent2gameteFitness, parent2gameteMutators, parent2modifierindex, mutatorconfig.antimutatorstate, mutatorconfig.switchrate, mutatorconfig.bias, randomnumbergeneratorforgamma, miscfilepointer);
+    ProduceMutatedGamete(tskitstatus, isburninphaseover, treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, &childnode2, totaltimesteps, currenttimestep, currentparent2, isabsolute, totalindividualgenomelength, p2_delrate, p2_benrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent2gameteFitness, parent2gameteMutators, parent2state, mutatorconfig.switchrate, mutatorconfig.bias, randomnumbergeneratorforgamma, miscfilepointer);
                
     /* TODO (bug 3, not yet fixed - awaiting sign-off): pPopSize is uninitialised
      * here and is passed straight into PerformDeath and PerformBirth. It is never
@@ -716,10 +697,10 @@ void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseov
     
     PerformDeath(isabsolute, tskitstatus, isburninphaseover, popsize, pPopSize, currentvictim, deleteriousdistribution, wholepopulationwistree, wholepopulation, NULL, NULL, NULL, psumofwis, NULL, NULL, 0, 0, 0, 0, NULL, NULL, wholepopulationnodesarray, miscfilepointer);
     
-    PerformBirth(tskitstatus, isburninphaseover, ismodular, elementsperlb, treesequencetablecollection, wholepopulationnodesarray, childnode1, childnode2, isabsolute, parent1gameteFitness, parent1gameteMutators, parent1gameteMask, parent2gameteFitness, parent2gameteMutators, parent2gameteMask, popsize, pPopSize, currentvictim, wholepopulation, totalindividualgenomelength, deleteriousdistribution, wholepopulationwistree, NULL, NULL, NULL, psumofwis, NULL, NULL, 0, 0, 0, 0, NULL, NULL, miscfilepointer, globalmodifiermask, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
+    PerformBirth(tskitstatus, isburninphaseover, ismodular, elementsperlb, treesequencetablecollection, wholepopulationnodesarray, childnode1, childnode2, isabsolute, parent1gameteFitness, parent1gameteMutators, parent1state, parent2gameteFitness, parent2gameteMutators, parent2state, popsize, pPopSize, currentvictim, wholepopulation, totalindividualgenomelength, deleteriousdistribution, wholepopulationwistree, NULL, NULL, NULL, psumofwis, NULL, NULL, 0, 0, 0, 0, NULL, NULL, miscfilepointer, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
 }
 
-void InitializePopulationRel(int tskitstatus, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, long double *wholepopulationwistree, Individual *wholepopulation, int popsize, int totalpopulationgenomelength, int totaltimesteps, long double * psumofwis, char *globalmodifiermask, MutatorConfig mutatorconfig, FILE *miscfilepointer) 
+void InitializePopulationRel(int tskitstatus, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, long double *wholepopulationwistree, Individual *wholepopulation, int popsize, int totalpopulationgenomelength, int chromosomesize, int numberofchromosomes, int totaltimesteps, long double * psumofwis, int *modifierlocuspositions, int *pnmodifierloci, MutatorConfig mutatorconfig, FILE *miscfilepointer) 
 {
     int i, j;
     double haploidgenomelength = (double) ((totalpopulationgenomelength / popsize) / 2);
@@ -729,17 +710,10 @@ void InitializePopulationRel(int tskitstatus, tsk_table_collection_t * treeseque
     for (i = 0; i < popsize; i++){
         wholepopulation[i].fitnessArray = malloc(sizeof(double) * genomelength);
         wholepopulation[i].mutatorArray = malloc(sizeof(int) * genomelength);
-        /* Per-individual modifier mask only exists in inherited-mask mode. In
-         * global-mask mode this stays NULL, saving popsize * genomelength bytes
-         * (about 184 MB at popsize 20000 with a 9200-block genome). */
-        wholepopulation[i].modifierMask = (mutatorconfig.maskmode == MODIFIERMASK_INHERITED)
-                                        ? malloc(sizeof(char) * genomelength)
-                                        : NULL;
+        wholepopulation[i].logFitness = 0.0;
         wholepopulation[i].fitness = 1.0;
         wholepopulation[i].mutationRate = 0.0;
         wholepopulation[i].beneficialMutationRate = 0.0;
-        wholepopulation[i].mutatorCount = 0;
-        wholepopulation[i].modifierCount = 0;
         wholepopulation[i].netModifierSum = 0;
         wholepopulationwistree[i] = 1.0; 
     }
@@ -763,61 +737,34 @@ void InitializePopulationRel(int tskitstatus, tsk_table_collection_t * treeseque
     /* =====================================================================
      * MODIFIER-LOCUS INITIALISATION
      * =====================================================================
-     * Two modes, chosen by mutatorconfig.maskmode.
+     * One set of modifier-locus positions is drawn for the whole run - exactly
+     * mutatorconfig.lociperchromosome blocks on each chromosome - and applied
+     * identically to every individual and to both homologs. One set of starting
+     * mutator positions is then drawn and applied to every haplotype, so the
+     * founding population is monomorphic at every modifier locus and all later
+     * variation is generated by the simulation itself.
      *
-     * MODIFIERMASK_GLOBAL
-     *   One mask is drawn for the whole run and mirrored across both homologs
-     *   of every individual. One set of starting mutator positions is drawn and
-     *   applied identically to every haplotype, so the founding population is
-     *   monomorphic at every modifier locus and all variation that appears later
-     *   is generated by the simulation itself.
-     *
-     * MODIFIERMASK_INHERITED
-     *   Each founder gets its OWN mask, mirrored across that individual's two
-     *   homologs, so individuals differ in which blocks carry a modifier locus
-     *   and recombination can genuinely reshuffle the mask over time. Since the
-     *   modifier loci then sit at different places in different individuals,
-     *   "the same starting positions everywhere" is not well defined; instead
-     *   exactly round(q * m) of EACH individual's own m modifier loci start at
-     *   +1, so every founder carries the same NUMBER of mutator alleles at
-     *   different positions.
+     * Nothing per-individual is stored: mutatorArray[i] != 0 already says whether
+     * block i is a modifier locus, and the shared position list is kept once at
+     * the RunSimulationRel level for the initialisation and the per-locus stats.
      * ===================================================================== */
     {
-        char *haploidmask = malloc(sizeof(char) * halfgenome);
-        int  *haploidstates = malloc(sizeof(int) * halfgenome);
+        int *haploidstates = malloc(sizeof(int) * halfgenome);
 
-        if (mutatorconfig.maskmode == MODIFIERMASK_GLOBAL) {
-            DrawModifierMask(globalmodifiermask, halfgenome, mutatorconfig.locusfraction);
-            SeedInitialMutatorStates(haploidstates, globalmodifiermask, halfgenome, mutatorconfig.initialmutatorfraction, mutatorconfig.antimutatorstate);
-            for (j = 0; j < popsize; j++) {
-                for (i = 0; i < halfgenome; i++) {
-                    wholepopulation[j].mutatorArray[i] = haploidstates[i];
-                    wholepopulation[j].mutatorArray[halfgenome + i] = haploidstates[i];
-                }
-            }
-        } else {
-            /* Global mask is unused in this mode; zero it so that nothing can
-             * accidentally read a stale value out of it. */
-            for (i = 0; i < halfgenome; i++) globalmodifiermask[i] = 0;
+        *pnmodifierloci = DrawModifierLocusPositions(modifierlocuspositions, chromosomesize, numberofchromosomes, mutatorconfig.lociperchromosome);
+        SeedInitialMutatorStates(haploidstates, modifierlocuspositions, *pnmodifierloci, halfgenome, mutatorconfig.initialmutatorfraction);
 
-            for (j = 0; j < popsize; j++) {
-                DrawModifierMask(haploidmask, halfgenome, mutatorconfig.locusfraction);
-                SeedInitialMutatorStates(haploidstates, haploidmask, halfgenome, mutatorconfig.initialmutatorfraction, mutatorconfig.antimutatorstate);
-                for (i = 0; i < halfgenome; i++) {
-                    wholepopulation[j].modifierMask[i] = haploidmask[i];
-                    wholepopulation[j].modifierMask[halfgenome + i] = haploidmask[i];
-                    wholepopulation[j].mutatorArray[i] = haploidstates[i];
-                    wholepopulation[j].mutatorArray[halfgenome + i] = haploidstates[i];
-                }
+        for (j = 0; j < popsize; j++) {
+            for (i = 0; i < halfgenome; i++) {
+                wholepopulation[j].mutatorArray[i] = haploidstates[i];
+                wholepopulation[j].mutatorArray[halfgenome + i] = haploidstates[i];
             }
         }
-
-        free(haploidmask);
         free(haploidstates);
     }
     
-    /* item 7: only mode 1 seeds the tables now. Mode 2 seeds them when the
-     * burn-in ends (see RunSimulationRel); mode 0 never does. */
+    /* only mode 1 seeds the tables here. Mode 2 seeds them when the burn-in
+     * ends (see RunSimulationRel); mode 0 never does. */
     if (tskitstatus == 1){
         SeedTreeSequenceTables(treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, popsize, (int) haploidgenomelength, (double) totaltimesteps);
     }

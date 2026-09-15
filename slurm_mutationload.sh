@@ -47,15 +47,16 @@
 #SBATCH --mem=8gb
 # MEMORY SIZING. The dominant cost is the population itself:
 #
-#     bytes ~= popsize * numberofchromosomes * 2 * chromosomesize * B
+#     bytes ~= popsize * numberofchromosomes * 2 * chromosomesize * 12
 #
-#     B = 12  in global-mask mode      (8 for the fitness double + 4 for the state int)
-#     B = 13  in inherited-mask mode   (+1 for the per-individual modifier mask byte)
+# (8 bytes for the fitness double plus 4 for the modifier-state int, per block.
+#  There is no separate mask array: the state array is self-describing, because
+#  a non-zero state means the block carries a modifier locus.)
 #
 # For the defaults below (popsize 20000, 23 chromosomes, 200 blocks) that is
-# about 2.2 GB (global) or 2.4 GB (inherited). Tree-sequence recording adds more
-# on top and grows with run length, so 8 GB is a safe starting point with
-# tskitstatus 0 or 2. Raise it if you turn tskit on from generation 0.
+# about 2.2 GB. Tree-sequence recording adds more on top and grows with run
+# length, so 8 GB is a safe starting point with tskitstatus 0 or 2. Raise it if
+# you turn tskit on from generation 0.
 
 #SBATCH --time=220:00:00
 # Walltime. A 20000 x 20000 run takes a long time; check the standard
@@ -116,9 +117,9 @@ seed=${seedarray[$TASKID]}
 #   mutator_strength_factor=${msfarray[$TASKID]}
 #   seed=101
 #
-# Sweep the fraction of blocks carrying a modifier locus (--array=0-4):
-#   mlfarray=(0.001 0.005 0.01 0.05 0.1)
-#   modifier_locus_fraction=${mlfarray[$TASKID]}
+# Sweep the number of modifier loci per chromosome (--array=0-4):
+#   nmodarray=(1 2 5 10 25)
+#   nmodifierlociperchromosome=${nmodarray[$TASKID]}
 #   seed=101
 #
 # Two parameters at once - 4 values of f x 5 seeds = 20 tasks (--array=0-19):
@@ -151,19 +152,12 @@ SdtoSbratio=0.029
 #0 for Kim et al.; 1 for exponential; 2 for point
 deldist=1
 #0 for relative fitness; 1 for absolute (absolute runs are disabled in this build)
-fitnesstype=0
 : "${seed:=101}"
 
 #--- absolute-fitness parameters (unused by relative runs, but they occupy
 #    positional argument slots and must still be supplied) -------------------
 slope=0
-K=20000
-r=0.98
-i_init=400
-s=0.01
 rawdatafilesize=10
-redinmaxpopsize=0
-calcfixation=0
 
 #--- modular epistasis: NOT SUPPORTED, both must stay 0 ---------------------
 modularepis=0
@@ -181,12 +175,10 @@ elementsperl=0
 #multiplier on the anti-mutator -> mutator rate; >1 favours mutators
 : "${mutator_bias:=1.0}"
 #p: fraction of linkage blocks carrying a modifier locus
-: "${modifier_locus_fraction:=0.01}"
-#0 = one global fixed mask; 1 = per-individual inherited mask
-: "${modifier_mask_mode:=0}"
+#number of modifier loci ON EACH CHROMOSOME (0 disables mutation-rate evolution entirely)
+: "${nmodifierlociperchromosome:=10}"
 #0 = anti-mutator stored as 0 (n = mutator count)
 #1 = anti-mutator stored as -1 (n = net sum, so mu can fall below mud)
-: "${antimutator_encoding:=0}"
 #q: fraction of modifier loci starting in the +1 state
 : "${initial_mutator_fraction:=0.0}"
 
@@ -196,6 +188,8 @@ elementsperl=0
 : "${trackindividuals:=0}"
 : "${trackinterval:=100}"
 : "${trackstartgen:=1}"
+#RESERVED: restart checkpoint every N generations; 0 = never. Not yet acted on.
+: "${checkpointinterval:=0}"
 
 # =============================================================================
 #  OUTPUT LOCATION
@@ -211,10 +205,6 @@ WORKDIR="$OUTROOT/job${SLURM_JOB_ID:-local}_task${TASKID}_seed${seed}"
 mkdir -p "$WORKDIR"
 cd "$WORKDIR" || { echo "ERROR: cannot cd to $WORKDIR" >&2; exit 1; }
 
-# The snapshot argument pair. The snapshot/restart workflow belongs to the
-# absolute-fitness runs and is not used here, so start fresh every time.
-snapshot=0
-file1="popsnapshotfor_popsize_${initialPopsize}_seed_${seed}.txt"
 
 # =============================================================================
 #  RUN
@@ -228,23 +218,21 @@ echo " workdir      : $WORKDIR"
 echo " seed         : $seed"
 echo " popsize      : $initialPopsize   timeSteps: $timeSteps   mud: $mud"
 echo " modifier     : f=$mutator_strength_factor switch=$mutator_switch_rate bias=$mutator_bias"
-echo "                p=$modifier_locus_fraction maskmode=$modifier_mask_mode enc=$antimutator_encoding q=$initial_mutator_fraction"
+echo "                modifier loci/chrom=$nmodifierlociperchromosome q=$initial_mutator_fraction"
 echo " tracking     : on=$trackindividuals interval=$trackinterval startgen=$trackstartgen"
 echo "==============================================================="
 
 SECONDS=0
 
-# 36 positional arguments, in this exact order. Adding, removing or reordering
+# 26 positional arguments, in this exact order. Adding, removing or reordering
 # any of them shifts everything after it - see AssignArgumentstoVar in main.c.
 "$EXE" \
     "$timeSteps" "$initialPopsize" "$mud" "$chromosomesize" "$numberofchromosomes" \
     "$bentodelratio" "$sb" "$bendist" "$typeofrun" "$slope" \
-    "$seed" "$K" "$fitnesstype" "$r" "$i_init" \
-    "$s" "$tskitstatus" "$modularepis" "$elementsperl" "$snapshot" \
-    "$file1" "$SdtoSbratio" "$deldist" "$rawdatafilesize" "$redinmaxpopsize" \
-    "$calcfixation" "$mutator_strength_factor" "$mutator_switch_rate" "$mutator_bias" \
-    "$modifier_locus_fraction" "$modifier_mask_mode" "$antimutator_encoding" \
-    "$initial_mutator_fraction" "$trackindividuals" "$trackinterval" "$trackstartgen"
+    "$seed" "$tskitstatus" "$modularepis" "$elementsperl" "$SdtoSbratio" \
+    "$deldist" "$rawdatafilesize" "$mutator_strength_factor" "$mutator_switch_rate" "$mutator_bias" \
+    "$nmodifierlociperchromosome" "$initial_mutator_fraction" \
+    "$trackindividuals" "$trackinterval" "$trackstartgen" "$checkpointinterval"
 
 status=$?
 
