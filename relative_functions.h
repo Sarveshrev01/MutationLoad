@@ -27,7 +27,7 @@
  * f, the switch rate, the bias, the NUMBER of modifier loci per chromosome and
  * the initial mutator fraction. TrackingConfig carries the per-individual dump
  * settings. Both are passed by value. */
-double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int elementsperlb, char * Nxtimestepsname, char * popsizename, char * delmutratename, char * chromsizename, char * chromnumname, char * mubname, char * Sbname, char * mutator_switch_ratename, char * mutator_biasname, char * mutator_strength_factorname, int typeofrun, int Nxtimesteps, int popsize, int chromosomesize, int numberofchromosomes, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, FILE *veryverbosefilepointer, int rawdatafilesize, MutatorConfig mutatorconfig, TrackingConfig trackingconfig);
+double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int elementsperlb, char * Nxtimestepsname, char * popsizename, char * delmutratename, char * chromsizename, char * chromnumname, char * mubname, char * Sbname, char * mutator_switch_ratename, char * mutator_biasname, char * mutator_strength_factorname, int typeofrun, int Nxtimesteps, int popsize, int chromosomesize, int numberofchromosomes, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, FILE *veryverbosefilepointer, int rawdatafilesize, int randomnumberseed, MutatorConfig mutatorconfig, TrackingConfig trackingconfig);
 
 void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t *treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, int popsize, int totaltimesteps, double currenttimestep, long double *wholepopulationwistree, Individual *wholepopulation, long double * psumofwis, long double logfitnessoffset, int chromosomesize, int numberofchromosomes, int totalindividualgenomelength, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, double *parent1gameteFitness, int *parent1gameteMutators, GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, GameteState *parent2state, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, MutatorConfig mutatorconfig);
 
@@ -69,9 +69,41 @@ void RenormalizeFitness(Individual *wholepopulation, int popsize, long double ne
  * the mean, the maximum and the minimum of the ABSOLUTE logFitness. */
 void SummariseLogFitness(Individual *wholepopulation, int popsize, long double *pmean, long double *pmax, long double *pmin);
 
+/* -------------------------------------------------------------------------
+ * RESTART CHECKPOINTS
+ * -------------------------------------------------------------------------
+ * A checkpoint is a complete image of the simulation state: every individual's
+ * fitness and modifier-state arrays, the shared modifier-locus positions, the
+ * log-fitness offset, the running sum, the burn-in detector's history, and all
+ * the parameters needed to validate a resume.
+ *
+ * SIZE. The body is popsize * 2L * 12 bytes. At popsize 500 with a 9200-block
+ * genome that is about 55 MB per checkpoint; at popsize 20000 it is about
+ * 2.2 GB. Set checkpointinterval accordingly - it is deliberately separate from
+ * the per-individual tracking interval, which is far cheaper.
+ *
+ * RESUMING. Set the environment variable MUTATIONLOAD_RESUME to a checkpoint
+ * path. This is an environment variable rather than a command-line argument so
+ * that the 26-argument layout, and therefore every submission script, stays
+ * unchanged. The header is validated against the current parameters and the run
+ * aborts on any mismatch.
+ *
+ * A RESUMED RUN IS NOT THE SAME REALISATION as an uninterrupted one. Both
+ * generators are reseeded deterministically from the stored seed and generation
+ * rather than having their internal state restored, so the continuation is
+ * reproducible and statistically valid but not bit-identical. That is fine for
+ * continuing a long run; it is not suitable for reproducing one exact trajectory.
+ *
+ * Checkpoints are binary and are only guaranteed readable by the same build on
+ * the same architecture.
+ * ------------------------------------------------------------------------- */
+int WriteCheckpoint(const char *path, Individual *wholepopulation, int popsize, int totalindividualgenomelength, int chromosomesize, int numberofchromosomes, int Nxtimesteps, int generation, int randomnumberseed, const int *modifierlocuspositions, int nmodifierloci, int isburninphaseover, int endofburninphase, int endofdelay, int Nxtimestepsafterburnin, double currenttimestep, double deleteriousmutationrate, double beneficialmutationrate, double Sb, double Sd, MutatorConfig mutatorconfig, long double logfitnessoffset, long double sumofwis, const double *literallyjustlast200Ntimesteps, const double *last200Ntimestepsvariance, const double *logaveragefitnesseachNtimesteps, FILE *miscfilepointer);
+
+int ReadCheckpoint(const char *path, Individual *wholepopulation, int popsize, int totalindividualgenomelength, int chromosomesize, int numberofchromosomes, int *pgeneration, int *prandomnumberseed, int *modifierlocuspositions, int *pnmodifierloci, int *pisburninphaseover, int *pendofburninphase, int *pendofdelay, int *pNxtimestepsafterburnin, double *pcurrenttimestep, long double *plogfitnessoffset, long double *psumofwis, double *literallyjustlast200Ntimesteps, double *last200Ntimestepsvariance, double *logaveragefitnesseachNtimesteps, FILE *miscfilepointer);
+
 /* --- output helpers ------------------------------------------------------- */
 void WritePopulationModifierSummary(FILE *rawdatafilepointer, Individual *wholepopulation, int popsize, int totalindividualgenomelength, const int *modifierlocuspositions, int nmodifierloci, int *locusmutatorcounts);
-void WriteIndividualSnapshot(FILE *individualfilepointer, Individual *wholepopulation, int popsize, int generation, int nmodifierslots);
+void WriteIndividualSnapshot(FILE *individualfilepointer, Individual *wholepopulation, int popsize, int generation, int nmodifierslots, long double logfitnessoffset, const int *modifierlocuspositions, int nmodifierloci, int chromosomesize, int numberofchromosomes, int totalindividualgenomelength, int *chromosomemutatorcounts);
 
 /* ---------------------------------------------------------------------------
  * CalculateWi - COMMENTED OUT (item 10: completely unused).

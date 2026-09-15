@@ -188,7 +188,26 @@ elementsperl=0
 : "${trackindividuals:=0}"
 : "${trackinterval:=100}"
 : "${trackstartgen:=1}"
-#RESERVED: restart checkpoint every N generations; 0 = never. Not yet acted on.
+#
+# --- Restart checkpoints -----------------------------------------------------
+# A checkpoint is a COMPLETE binary image of the simulation state, written to
+# checkpoint_gen<N>.bin in the output directory.
+#
+# SIZE: popsize * 2 * numberofchromosomes * chromosomesize * 12 bytes.
+#   popsize 500,   9200 blocks  ->  about   55 MB each
+#   popsize 20000, 9200 blocks  ->  about  2.2 GB each
+# Keep this MUCH larger than trackinterval. At the production size above, a
+# checkpoint every 500 generations over a 20000-generation run is 88 GB.
+# 0 disables checkpointing.
+#
+# TO RESUME: export MUTATIONLOAD_RESUME=/path/to/checkpoint_genN.bin before the
+# run. An environment variable rather than a 27th argument, so this script's
+# argument list never changes. Mismatched popsize or genome dimensions abort.
+#
+# CAVEAT: a resumed run is a VALID but DIFFERENT realisation - both generators
+# are reseeded from the stored seed and generation rather than having their
+# state restored. Fine for continuing a long run; not for reproducing a
+# specific trajectory.
 : "${checkpointinterval:=0}"
 
 # =============================================================================

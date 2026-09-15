@@ -217,7 +217,7 @@ int main(int argc, char *argv[]) {
      * --------------------------------------------------------------------- */
     gsl_rng_set(randomnumbergeneratorforgamma, (unsigned long int) randomnumberseed);
     
-    char * directoryname = MakeDirectoryName(tskitstatusname, deldistname, isabsolutename, isabsolute, bendistname, beneficialmutationratename, numberofchromosomesname, chromosomesizename, popsizename, deleteriousmutationratename, randomnumberseedname, ismodular, elementsperlbname, iscalcfixationname, typeofrun, Sb2name, Sdname);
+    char * directoryname = MakeDirectoryName(Nxtimesteps, popsize, deleteriousmutationrate, chromosomesize, numberofchromosomes, bentodelmutrate, Sb2, Sd, beneficialdistribution, deleteriousdistribution, typeofrun, tskitstatus, randomnumberseed, mutatorconfig);
     
     mkdir(directoryname, 0777);
     chdir(directoryname);
@@ -236,11 +236,11 @@ int main(int argc, char *argv[]) {
         // Bracketing logic currently unmodified for mutators, using default call
         fprintf(miscfilepointer, "Beginning bracketing function.");
         fflush(miscfilepointer);
-        BracketZeroForSb(tskitstatus, isabsolute, ismodular, elementsperlb, pSb1, pSb2, Nxtimestepsname, popsizename, deleteriousmutationratename, chromosomesizename, numberofchromosomesname, beneficialmutationratename, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, slopeforcontourline, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, verbosefilepointer, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
+        BracketZeroForSb(tskitstatus, isabsolute, ismodular, elementsperlb, pSb1, pSb2, Nxtimestepsname, popsizename, deleteriousmutationratename, chromosomesizename, numberofchromosomesname, beneficialmutationratename, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, slopeforcontourline, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, verbosefilepointer, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
         // ... (rest of bracketing logic)
     } else if (typeofrun == 1){
         if(!isabsolute){
-            RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, deleteriousmutationratename, chromosomesizename, numberofchromosomesname, beneficialmutationratename, Sb2name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, Sb2, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
+            RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, deleteriousmutationratename, chromosomesizename, numberofchromosomesname, beneficialmutationratename, Sb2name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, Sb2, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
         }else{
             // Absolute-fitness path is currently disabled (absolute_functions.c is not being
             // built/linked).
@@ -542,7 +542,7 @@ int DetermineMutationSite(int totalgametelength)
 //The following function is heavily modified from Numerical Recipes in C, Second Edition.
 //For large population sizes, populations with mean Sb > 0 may actually have a more negative fitness slope than mean Sb = 0.
 //
-int BracketZeroForSb(int tskitstatus, bool isabsolute, bool ismodular, int elementsperlb, double *Sb1, double *Sb2, char * Nxtimestepsname, char * popsizename, char * delmutratename, char * chromsizename, char * chromnumname, char * mubname, char * mutator_switch_ratename, char * mutator_biasname, char * mutator_strength_factorname, int typeofrun, int Nxtimesteps, int popsize, int chromosomesize, int numberofchromosomes, double deleteriousmutationrate, double beneficialmutationrate, double slopeforcontourline, int beneficialdistribution, double Sd, int deleteriousdistribution, gsl_rng * randomnumbergeneratorforgamma, FILE *verbosefilepointer, FILE *miscfilepointer, FILE *veryverbosefilepointer, int rawdatafilesize, MutatorConfig mutatorconfig, TrackingConfig trackingconfig) {
+int BracketZeroForSb(int tskitstatus, bool isabsolute, bool ismodular, int elementsperlb, double *Sb1, double *Sb2, char * Nxtimestepsname, char * popsizename, char * delmutratename, char * chromsizename, char * chromnumname, char * mubname, char * mutator_switch_ratename, char * mutator_biasname, char * mutator_strength_factorname, int typeofrun, int Nxtimesteps, int popsize, int chromosomesize, int numberofchromosomes, double deleteriousmutationrate, double beneficialmutationrate, double slopeforcontourline, int beneficialdistribution, double Sd, int deleteriousdistribution, gsl_rng * randomnumbergeneratorforgamma, FILE *verbosefilepointer, FILE *miscfilepointer, FILE *veryverbosefilepointer, int rawdatafilesize, int randomnumberseed, MutatorConfig mutatorconfig, TrackingConfig trackingconfig) {
     int i, numberoftries;
     numberoftries = 10;
     float factor = 0.01;
@@ -554,8 +554,8 @@ int BracketZeroForSb(int tskitstatus, bool isabsolute, bool ismodular, int eleme
         fflush(verbosefilepointer);
     }
     float resultingslope1, resultingslope2;
-    resultingslope1 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb1name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb1, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
-    resultingslope2 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb2name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb2, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
+    resultingslope1 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb1name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb1, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
+    resultingslope2 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb2name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb2, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
     if (VERBOSE == 1) {
         fprintf(verbosefilepointer, "First two slopes are: %.6f for sb %.6f, and %.6f for sb %.6f\n", resultingslope1, *Sb1, resultingslope2, *Sb2);
         fflush(verbosefilepointer);
@@ -580,7 +580,7 @@ int BracketZeroForSb(int tskitstatus, bool isabsolute, bool ismodular, int eleme
                 fprintf(verbosefilepointer, "Starting run with new sb2 = %.6f\n", *Sb2);
                 fflush(verbosefilepointer);
             }
-            resultingslope2 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb2name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb2, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
+            resultingslope2 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb2name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb2, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
             if (VERBOSE == 1) {
                 fprintf(verbosefilepointer, "Slope for sb %.6f = %.6f\n", *Sb2, resultingslope2);
                 fflush(verbosefilepointer);
@@ -594,7 +594,7 @@ int BracketZeroForSb(int tskitstatus, bool isabsolute, bool ismodular, int eleme
                 fprintf(verbosefilepointer, "Starting run with new sb1 = %.6f\n", *Sb2);
                 fflush(verbosefilepointer);
             }
-            resultingslope1 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb1name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb1, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
+            resultingslope1 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb1name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb1, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
             if (VERBOSE == 1) {
                 fprintf(verbosefilepointer, "Slope for sb %.6f = %.6f\n", *Sb1, resultingslope1);
                 fflush(verbosefilepointer);
@@ -613,7 +613,7 @@ int BracketZeroForSb(int tskitstatus, bool isabsolute, bool ismodular, int eleme
  * BracketZeroForSb has its tail elided, so nothing invokes this.
  * Commented out, not deleted (item 10). Uncomment to bring it back.
  * ---------------------------------------------------------------------------
-double BisectionMethodToFindSbWithZeroSlope(int tskitstatus, bool isabsolute, bool ismodular, int elementsperlb, double * Sb1, double * Sb2, char * Nxtimestepsname, char * popsizename, char * delmutratename, char * chromsizename, char * chromnumname, char * mubname, char * mutator_switch_ratename, char * mutator_biasname, char * mutator_strength_factorname, int typeofrun, int Nxtimesteps, int popsize, int chromosomesize, int numberofchromosomes, double deleteriousmutationrate, double beneficialmutationrate, double slopeforcontourline, int beneficialdistribution, double Sd, int deleteriousdistribution, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, FILE *verbosefilepointer, FILE *finaldatafilepointer, FILE *veryverbosefilepointer, int rawdatafilesize, MutatorConfig mutatorconfig, TrackingConfig trackingconfig) {
+double BisectionMethodToFindSbWithZeroSlope(int tskitstatus, bool isabsolute, bool ismodular, int elementsperlb, double * Sb1, double * Sb2, char * Nxtimestepsname, char * popsizename, char * delmutratename, char * chromsizename, char * chromnumname, char * mubname, char * mutator_switch_ratename, char * mutator_biasname, char * mutator_strength_factorname, int typeofrun, int Nxtimesteps, int popsize, int chromosomesize, int numberofchromosomes, double deleteriousmutationrate, double beneficialmutationrate, double slopeforcontourline, int beneficialdistribution, double Sd, int deleteriousdistribution, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, FILE *verbosefilepointer, FILE *finaldatafilepointer, FILE *veryverbosefilepointer, int rawdatafilesize, int randomnumberseed, MutatorConfig mutatorconfig, TrackingConfig trackingconfig) {
     int i;
     double factor, slope1, slopemid, Sbmid, root;
     double accuracy = 0.00005;
@@ -626,13 +626,13 @@ double BisectionMethodToFindSbWithZeroSlope(int tskitstatus, bool isabsolute, bo
         fprintf(verbosefilepointer, "Starting Sb1name: %s, starting Sb2name: %s", Sb1name, Sb2name);
         fflush(verbosefilepointer);
     }
-    slope1 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb1name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb1, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
+    slope1 = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb1name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb1, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
     if (VERBOSE == 1) {
         fprintf(verbosefilepointer, "Finished run with sb %.6f, resulting in a slope of %.6f\n", *Sb1, slope1);
         fflush(verbosefilepointer);
     }
     
-    slopemid = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb2name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb2, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
+    slopemid = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sb2name, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, *Sb2, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
     if (VERBOSE == 1) {
         fprintf(verbosefilepointer, "Finished run with sb %.6f, resulting in a slope of %.6f\n", *Sb2, slopemid);
     }
@@ -650,7 +650,7 @@ double BisectionMethodToFindSbWithZeroSlope(int tskitstatus, bool isabsolute, bo
             fprintf(verbosefilepointer, "Starting run with sb %.6f\n", Sbmid);
             fflush(verbosefilepointer);
         }
-        slopemid = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sbmidname, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, Sbmid, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, mutatorconfig, trackingconfig);
+        slopemid = RunSimulationRel(tskitstatus, isabsolute, ismodular, elementsperlb, Nxtimestepsname, popsizename, delmutratename, chromsizename, chromnumname, mubname, Sbmidname, mutator_switch_ratename, mutator_biasname, mutator_strength_factorname, typeofrun, Nxtimesteps, popsize, chromosomesize, numberofchromosomes, deleteriousmutationrate, beneficialmutationrate, Sbmid, beneficialdistribution, Sd, deleteriousdistribution, randomnumbergeneratorforgamma, miscfilepointer, veryverbosefilepointer, rawdatafilesize, randomnumberseed, mutatorconfig, trackingconfig);
         if (VERBOSE == 1) {
             fprintf(verbosefilepointer, "Finished run with sb %.6f, resulting in a slope of %.6f\n", Sbmid, slopemid);
             fflush(verbosefilepointer);
@@ -670,65 +670,54 @@ double BisectionMethodToFindSbWithZeroSlope(int tskitstatus, bool isabsolute, bo
 }
  * ------------------------------------------------------------------------- */
 
-char * MakeDirectoryName(char * tskitstatus, char* deldist, char * isabsolutename, bool isabsolute, char * bendist, char * benmut, char * numberofchromosomes, char * chromosomesize, char * popsize, char * delmut, char * randomnumberseed, bool ismodular, char *elementsperlb, char *iscalcfixationname, int typeofrun, char * Sbname, char *Sdname) 
+/* ===========================================================================
+ * MakeDirectoryName
+ * ===========================================================================
+ * Builds the output directory name as explicit key-value pairs, so every run is
+ * self-describing from its path alone.
+ *
+ * INCLUDED (18) - every parameter this build actually uses:
+ *   Nx        Nxtimesteps                L         chromosomesize
+ *   N         popsize                    nchrom    numberofchromosomes
+ *   mud       deleterious mutation rate  b2d       beneficial:deleterious ratio
+ *   Sb        beneficial effect size     Sd        deleterious effect size
+ *   bendist   beneficial distribution    deldist   deleterious distribution
+ *   typeofrun                            tskit     tskitstatus
+ *   seed                                 f         mutator_strength_factor
+ *   msr       mutator_switch_rate        mbias     mutator_bias
+ *   nmodperchrom  modifier loci per chromosome
+ *   q         initial mutator fraction
+ *
+ * EXCLUDED (13) - none of these is read by a relative-fitness run any more:
+ *   K, r, i_init, s      absolute-fitness only; removed from the command line
+ *   fitnesstype          always relative in this build
+ *   slope                only used by the typeofrun 0 bracketing search
+ *   modularepis,
+ *   elementsperl         modular epistasis is rejected at startup
+ *   snapshot,
+ *   snapshot filename    absolute-fitness workflow; removed from the command line
+ *   redinmaxpopsize,
+ *   calcfixation         absolute-fitness only; removed from the command line
+ *   rawdatafilesize      parsed but never read by any function
+ *   SdtoSbratio          redundant: the derived Sd is shown directly
+ *
+ * The files INSIDE this directory get short fixed names (rawdata.txt,
+ * summary.txt, individualtracking.txt, checkpoint_gen<N>.bin and the four tskit
+ * tables). Repeating the parameter string in every file name would push paths
+ * towards the 255-byte filesystem limit for no benefit, since the directory
+ * already identifies the run uniquely.
+ * =========================================================================== */
+char * MakeDirectoryName(int Nxtimesteps, int popsize, double deleteriousmutationrate, int chromosomesize, int numberofchromosomes, double bentodelmutrate, double Sb, double Sd, int beneficialdistribution, int deleteriousdistribution, int typeofrun, int tskitstatus, int randomnumberseed, MutatorConfig mutatorconfig)
 {
-	
-	char * directoryname = (char *) malloc(400);
-	strcpy(directoryname, "datafor_");
-	strcat(directoryname, isabsolutename);
-    strcat(directoryname, "_tskitstatus_");
-	strcat(directoryname, tskitstatus);
-    strcat(directoryname, "_fixationcalc_");
-	strcat(directoryname, iscalcfixationname);
-    /* Modular-epistasis naming - COMMENTED OUT: ismodular is hard-wired false.
-    if(ismodular){
-        strcat(directoryname, "_m_");
-        strcat(directoryname, elementsperlb);
-    }
-    */
-    /* Absolute-fitness naming fields - COMMENTED OUT (Tier 3). This branch was
-     * already unreachable: main() aborts on absolute runs, so isabsolute is
-     * always false by the time this is called, and these fields never appeared
-     * in any directory name produced by this build. Commenting it therefore
-     * changes no output. The r / i_init / s / K parameters have therefore been
-     * removed from this function's signature entirely; ismodular and
-     * elementsperlb remain but are unused.
-    if(isabsolute){
-        strcat(directoryname, "_r_");
-        strcat(directoryname, r);
-        strcat(directoryname, "_iinit_");
-        strcat(directoryname, i_init);
-        strcat(directoryname, "_s_");
-        strcat(directoryname, s);
-        strcat(directoryname, "_K_");
-        strcat(directoryname, K);
-    }
-    */
-    if(typeofrun == 1){
-        strcat(directoryname, "_Sb_");
-        strcat(directoryname, Sbname);
-    }
-    strcat(directoryname, "_deldist_");
-    strcat(directoryname, deldist);
-    strcat(directoryname, "_bendist_");
-	strcat(directoryname, bendist);
-	strcat(directoryname, "_mub_");
-	strcat(directoryname, benmut);
-	strcat(directoryname, "_chromnum_");
-	strcat(directoryname, numberofchromosomes);
-	strcat(directoryname, "_N0_");
-	strcat(directoryname, popsize);
-	strcat(directoryname, "_mud_");
-	strcat(directoryname, delmut);
-    strcat(directoryname, "_L_");
-	strcat(directoryname, chromosomesize);
-	strcat(directoryname, "_seed_");
-	strcat(directoryname, randomnumberseed);
-    strcat(directoryname, "_Sd_");
-    strcat(directoryname, Sdname);
-    
-
-	return directoryname;
+    char * directoryname = (char *) malloc(512);
+    snprintf(directoryname, 512,
+        "datafor_Nx-%d_N-%d_mud-%g_L-%d_nchrom-%d_b2d-%g_Sb-%g_Sd-%g_bendist-%d_deldist-%d_typeofrun-%d_tskit-%d_seed-%d_f-%g_msr-%g_mbias-%g_nmodperchrom-%d_q-%g",
+        Nxtimesteps, popsize, deleteriousmutationrate, chromosomesize, numberofchromosomes,
+        bentodelmutrate, Sb, Sd, beneficialdistribution, deleteriousdistribution,
+        typeofrun, tskitstatus, randomnumberseed,
+        mutatorconfig.strengthfactor, mutatorconfig.switchrate, mutatorconfig.bias,
+        mutatorconfig.lociperchromosome, mutatorconfig.initialmutatorfraction);
+    return directoryname;
 }
 
 /* ---------------------------------------------------------------------------

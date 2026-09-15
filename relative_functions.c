@@ -137,6 +137,171 @@ void SeedTreeSequenceTables(tsk_table_collection_t * treesequencetablecollection
 }
 
 /* =========================================================================
+ * RESTART CHECKPOINTS
+ * =========================================================================
+ * Binary image of the whole simulation state. See relative_functions.h for the
+ * size, the resume mechanism and the caveat that a resumed run is a valid but
+ * different realisation rather than a bit-identical continuation.
+ * ========================================================================= */
+#define CHECKPOINT_MAGIC   0x4D55544C4F414431ULL   /* "MUTLOAD1" */
+#define CHECKPOINT_VERSION 1
+
+typedef struct {
+    unsigned long long magic;
+    int version;
+    int popsize;
+    int totalindividualgenomelength;
+    int chromosomesize;
+    int numberofchromosomes;
+    int Nxtimesteps;
+    int generation;              /* completed generations; the resume starts here */
+    int randomnumberseed;
+    int nmodifierloci;
+    int lociperchromosome;
+    int isburninphaseover;
+    int endofburninphase;
+    int endofdelay;
+    int Nxtimestepsafterburnin;
+    double currenttimestep;
+    double deleteriousmutationrate;
+    double beneficialmutationrate;
+    double Sb;
+    double Sd;
+    double strengthfactor;
+    double switchrate;
+    double bias;
+    double initialmutatorfraction;
+    double logfitnessoffset;     /* double, not long double, so the format does not */
+    double sumofwis;             /* depend on the platform's long double width      */
+} CheckpointHeader;
+
+int WriteCheckpoint(const char *path, Individual *wholepopulation, int popsize, int totalindividualgenomelength, int chromosomesize, int numberofchromosomes, int Nxtimesteps, int generation, int randomnumberseed, const int *modifierlocuspositions, int nmodifierloci, int isburninphaseover, int endofburninphase, int endofdelay, int Nxtimestepsafterburnin, double currenttimestep, double deleteriousmutationrate, double beneficialmutationrate, double Sb, double Sd, MutatorConfig mutatorconfig, long double logfitnessoffset, long double sumofwis, const double *literallyjustlast200Ntimesteps, const double *last200Ntimestepsvariance, const double *logaveragefitnesseachNtimesteps, FILE *miscfilepointer)
+{
+    CheckpointHeader hd;
+    FILE *fp;
+    int i;
+
+    fp = fopen(path, "wb");
+    if (fp == NULL) {
+        fprintf(miscfilepointer, "WARNING: could not open checkpoint file %s for writing; continuing without it.\n", path);
+        fflush(miscfilepointer);
+        return 0;
+    }
+
+    memset(&hd, 0, sizeof(hd));
+    hd.magic = CHECKPOINT_MAGIC;
+    hd.version = CHECKPOINT_VERSION;
+    hd.popsize = popsize;
+    hd.totalindividualgenomelength = totalindividualgenomelength;
+    hd.chromosomesize = chromosomesize;
+    hd.numberofchromosomes = numberofchromosomes;
+    hd.Nxtimesteps = Nxtimesteps;
+    hd.generation = generation;
+    hd.randomnumberseed = randomnumberseed;
+    hd.nmodifierloci = nmodifierloci;
+    hd.lociperchromosome = mutatorconfig.lociperchromosome;
+    hd.isburninphaseover = isburninphaseover;
+    hd.endofburninphase = endofburninphase;
+    hd.endofdelay = endofdelay;
+    hd.Nxtimestepsafterburnin = Nxtimestepsafterburnin;
+    hd.currenttimestep = currenttimestep;
+    hd.deleteriousmutationrate = deleteriousmutationrate;
+    hd.beneficialmutationrate = beneficialmutationrate;
+    hd.Sb = Sb;
+    hd.Sd = Sd;
+    hd.strengthfactor = mutatorconfig.strengthfactor;
+    hd.switchrate = mutatorconfig.switchrate;
+    hd.bias = mutatorconfig.bias;
+    hd.initialmutatorfraction = mutatorconfig.initialmutatorfraction;
+    hd.logfitnessoffset = (double) logfitnessoffset;
+    hd.sumofwis = (double) sumofwis;
+
+    if (fwrite(&hd, sizeof(hd), 1, fp) != 1) goto writefail;
+    if (nmodifierloci > 0 && fwrite(modifierlocuspositions, sizeof(int), (size_t) nmodifierloci, fp) != (size_t) nmodifierloci) goto writefail;
+    for (i = 0; i < popsize; i++) {
+        if (fwrite(wholepopulation[i].fitnessArray, sizeof(double), (size_t) totalindividualgenomelength, fp) != (size_t) totalindividualgenomelength) goto writefail;
+        if (fwrite(wholepopulation[i].mutatorArray, sizeof(int), (size_t) totalindividualgenomelength, fp) != (size_t) totalindividualgenomelength) goto writefail;
+    }
+    if (fwrite(literallyjustlast200Ntimesteps, sizeof(double), 200, fp) != 200) goto writefail;
+    if (fwrite(last200Ntimestepsvariance, sizeof(double), 200, fp) != 200) goto writefail;
+    if (Nxtimestepsafterburnin > 0 && fwrite(logaveragefitnesseachNtimesteps, sizeof(double), (size_t) Nxtimestepsafterburnin, fp) != (size_t) Nxtimestepsafterburnin) goto writefail;
+
+    fclose(fp);
+    fprintf(miscfilepointer, "Checkpoint written at generation %d: %s\n", generation, path);
+    fflush(miscfilepointer);
+    return 1;
+
+writefail:
+    fclose(fp);
+    fprintf(miscfilepointer, "WARNING: checkpoint %s was truncated (disk full?); it is not usable for a resume.\n", path);
+    fflush(miscfilepointer);
+    return 0;
+}
+
+int ReadCheckpoint(const char *path, Individual *wholepopulation, int popsize, int totalindividualgenomelength, int chromosomesize, int numberofchromosomes, int *pgeneration, int *prandomnumberseed, int *modifierlocuspositions, int *pnmodifierloci, int *pisburninphaseover, int *pendofburninphase, int *pendofdelay, int *pNxtimestepsafterburnin, double *pcurrenttimestep, long double *plogfitnessoffset, long double *psumofwis, double *literallyjustlast200Ntimesteps, double *last200Ntimestepsvariance, double *logaveragefitnesseachNtimesteps, FILE *miscfilepointer)
+{
+    CheckpointHeader hd;
+    FILE *fp;
+    int i;
+
+    fp = fopen(path, "rb");
+    if (fp == NULL) {
+        fprintf(stderr, "FATAL: MUTATIONLOAD_RESUME is set to %s but that file cannot be opened.\n", path);
+        fprintf(miscfilepointer, "FATAL: cannot open checkpoint %s.\n", path);
+        fflush(miscfilepointer);
+        exit(1);
+    }
+    if (fread(&hd, sizeof(hd), 1, fp) != 1) {
+        fprintf(stderr, "FATAL: checkpoint %s is truncated.\n", path);
+        fclose(fp); exit(1);
+    }
+
+    /* Validate hard, and say exactly what disagrees. Silently resuming into a
+     * mismatched genome would corrupt the run without any visible symptom. */
+    if (hd.magic != CHECKPOINT_MAGIC || hd.version != CHECKPOINT_VERSION) {
+        fprintf(stderr, "FATAL: %s is not a checkpoint of this program version.\n", path); fclose(fp); exit(1);
+    }
+#define CHK(field, current, name) \
+    if ((field) != (current)) { \
+        fprintf(stderr, "FATAL: checkpoint %s was written with " name " = %d but this run has %d.\n", path, (int)(field), (int)(current)); \
+        fprintf(miscfilepointer, "FATAL: checkpoint mismatch on " name ".\n"); fflush(miscfilepointer); fclose(fp); exit(1); }
+    CHK(hd.popsize, popsize, "popsize")
+    CHK(hd.totalindividualgenomelength, totalindividualgenomelength, "genome length")
+    CHK(hd.chromosomesize, chromosomesize, "chromosomesize")
+    CHK(hd.numberofchromosomes, numberofchromosomes, "numberofchromosomes")
+#undef CHK
+
+    *pgeneration            = hd.generation;
+    *prandomnumberseed      = hd.randomnumberseed;
+    *pnmodifierloci         = hd.nmodifierloci;
+    *pisburninphaseover     = hd.isburninphaseover;
+    *pendofburninphase      = hd.endofburninphase;
+    *pendofdelay            = hd.endofdelay;
+    *pNxtimestepsafterburnin= hd.Nxtimestepsafterburnin;
+    *pcurrenttimestep       = hd.currenttimestep;
+    *plogfitnessoffset      = (long double) hd.logfitnessoffset;
+    *psumofwis              = (long double) hd.sumofwis;
+
+    if (hd.nmodifierloci > 0 && fread(modifierlocuspositions, sizeof(int), (size_t) hd.nmodifierloci, fp) != (size_t) hd.nmodifierloci) goto readfail;
+    for (i = 0; i < popsize; i++) {
+        if (fread(wholepopulation[i].fitnessArray, sizeof(double), (size_t) totalindividualgenomelength, fp) != (size_t) totalindividualgenomelength) goto readfail;
+        if (fread(wholepopulation[i].mutatorArray, sizeof(int), (size_t) totalindividualgenomelength, fp) != (size_t) totalindividualgenomelength) goto readfail;
+    }
+    if (fread(literallyjustlast200Ntimesteps, sizeof(double), 200, fp) != 200) goto readfail;
+    if (fread(last200Ntimestepsvariance, sizeof(double), 200, fp) != 200) goto readfail;
+    if (hd.Nxtimestepsafterburnin > 0 && fread(logaveragefitnesseachNtimesteps, sizeof(double), (size_t) hd.Nxtimestepsafterburnin, fp) != (size_t) hd.Nxtimestepsafterburnin) goto readfail;
+
+    fclose(fp);
+    return 1;
+
+readfail:
+    fprintf(stderr, "FATAL: checkpoint %s is truncated.\n", path);
+    fprintf(miscfilepointer, "FATAL: checkpoint %s is truncated.\n", path);
+    fflush(miscfilepointer);
+    fclose(fp); exit(1);
+}
+
+/* =========================================================================
  * SummariseLogFitness
  * =========================================================================
  * One O(N) pass over the population returning the mean, maximum and minimum of
@@ -290,28 +455,43 @@ void WritePopulationModifierSummary(FILE *rawdatafilepointer, Individual *wholep
  * MutatorAlleleCount and AntiMutatorAlleleCount are derived from the net sum and
  * the run-level constant number of modifier slots.
  * ========================================================================= */
-void WriteIndividualSnapshot(FILE *individualfilepointer, Individual *wholepopulation, int popsize, int generation, int nmodifierslots)
+void WriteIndividualSnapshot(FILE *individualfilepointer, Individual *wholepopulation, int popsize, int generation, int nmodifierslots, long double logfitnessoffset, const int *modifierlocuspositions, int nmodifierloci, int chromosomesize, int numberofchromosomes, int totalindividualgenomelength, int *chromosomemutatorcounts)
 {
-    int k;
+    int k, j, h;
+    int halfgenome = totalindividualgenomelength / 2;
     for (k = 0; k < popsize; k++) {
         int n = wholepopulation[k].netModifierSum;
         int mutators     = (nmodifierslots + n) / 2;
         int antimutators = (nmodifierslots - n) / 2;
-        fprintf(individualfilepointer, "%d,%d,%.12Lg,%.12Lg,%.12g,%.12g,%d,%d,%d,%d\n",
+
+        /* Per-chromosome mutator counts, pooled over both homologs. Only the
+         * modifier positions are visited, so this is O(nmodifierloci). */
+        for (h = 0; h < numberofchromosomes; h++) chromosomemutatorcounts[h] = 0;
+        for (j = 0; j < nmodifierloci; j++) {
+            int pos = modifierlocuspositions[j];
+            h = pos / chromosomesize;
+            if (wholepopulation[k].mutatorArray[pos] == 1) chromosomemutatorcounts[h]++;
+            if (wholepopulation[k].mutatorArray[halfgenome + pos] == 1) chromosomemutatorcounts[h]++;
+        }
+
+        fprintf(individualfilepointer, "%d,%d,%.12Lg,%.12Lg,%.12Lg,%.12g,%.12g,%d,%d,%d,%d",
                 generation,
                 k + 1,
                 wholepopulation[k].fitness,
-                wholepopulation[k].logFitness,
+                wholepopulation[k].logFitness,      /* ABSOLUTE, offset-independent */
+                logfitnessoffset,
                 wholepopulation[k].mutationRate,
                 wholepopulation[k].beneficialMutationRate,
                 mutators,
                 antimutators,
                 nmodifierslots,
                 n);
+        for (h = 0; h < numberofchromosomes; h++) fprintf(individualfilepointer, ",%d", chromosomemutatorcounts[h]);
+        fprintf(individualfilepointer, "\n");
     }
 }
 
-double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int elementsperlb, char * Nxtimestepsname, char * popsizename, char * delmutratename, char * chromsizename, char * chromnumname, char * mubname, char * Sbname, char * mutator_switch_ratename, char * mutator_biasname, char * mutator_strength_factorname, int typeofrun, int Nxtimesteps, int popsize, int chromosomesize, int numberofchromosomes, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, FILE *veryverbosefilepointer, int rawdatafilesize, MutatorConfig mutatorconfig, TrackingConfig trackingconfig)
+double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int elementsperlb, char * Nxtimestepsname, char * popsizename, char * delmutratename, char * chromsizename, char * chromnumname, char * mubname, char * Sbname, char * mutator_switch_ratename, char * mutator_biasname, char * mutator_strength_factorname, int typeofrun, int Nxtimesteps, int popsize, int chromosomesize, int numberofchromosomes, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, FILE *veryverbosefilepointer, int rawdatafilesize, int randomnumberseed, MutatorConfig mutatorconfig, TrackingConfig trackingconfig)
 {
     if(isabsolute){
         fprintf(miscfilepointer, "\n Trying to use RunSimulationRel within an absolute fitness program. \n");
@@ -337,45 +517,24 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     
     int i, j, k;
     
-    /* The mutator/modifier parameters are now part of the raw data file name.
-     * Without them, two runs that differ only in their mutator settings landed in
-     * the same directory under the same file name and silently overwrote each
-     * other, because MakeDirectoryName() does not know about them either. */
-    char * rawdatafilename = (char *) malloc(400);
-    strcpy(rawdatafilename, "rawdatafor");
-    strcat(rawdatafilename, "Nxtimesteps"); strcat(rawdatafilename, Nxtimestepsname);
-    strcat(rawdatafilename, "popsize"); strcat(rawdatafilename, popsizename);
-    strcat(rawdatafilename, "mutrate"); strcat(rawdatafilename, delmutratename);
-    strcat(rawdatafilename, "chromsize"); strcat(rawdatafilename, chromsizename);
-    strcat(rawdatafilename, "chromnum"); strcat(rawdatafilename, chromnumname);
-    strcat(rawdatafilename, "benmutrate"); strcat(rawdatafilename, mubname);
-    strcat(rawdatafilename, "Sb"); strcat(rawdatafilename, Sbname);
-    strcat(rawdatafilename, "msf"); strcat(rawdatafilename, mutator_strength_factorname);
-    strcat(rawdatafilename, "msr"); strcat(rawdatafilename, mutator_switch_ratename);
-    strcat(rawdatafilename, "mb"); strcat(rawdatafilename, mutator_biasname);
-    /* modifier-locus settings, so runs differing only in those do not collide */
-    {
-        char modifiertag[120];
-        snprintf(modifiertag, sizeof(modifiertag), "nmodperchrom%d_imf%g",
-                 mutatorconfig.lociperchromosome, mutatorconfig.initialmutatorfraction);
-        strcat(rawdatafilename, modifiertag);
-    }
-    strcat(rawdatafilename, ".txt");
+    /* -------------------------------------------------------------------
+     * File names inside the output directory are short and fixed. The
+     * directory name already carries every parameter as key-value pairs (see
+     * MakeDirectoryName), so repeating them here would only push paths towards
+     * the 255-byte filesystem limit. Two runs with different parameters land in
+     * different directories and cannot collide.
+     * ------------------------------------------------------------------- */
+    char * rawdatafilename = (char *) malloc(64);
+    strcpy(rawdatafilename, "rawdata.txt");
 
     rawdatafilepointer = fopen(rawdatafilename, "w");
-    /* Header extended with the mutation-rate-evolution columns (item 5). */
+    /* Header extended with the mutation-rate-evolution columns. */
     fprintf(rawdatafilepointer, "Nxtimesteps,Sum.of.wis,Mean.log.fitness,Log.fitness.offset,Variance.in.log.fitness,FractionSelectiveDeaths,Mean.deleterious.mutation.rate,Mean.beneficial.mutation.rate,Mean.net.modifier.sum,Mean.mutator.freq.perindividual,Var.mutator.freq.acrossindividuals,Mean.mutator.freq.perlocus,Var.mutator.freq.acrossloci\n");
-    
-    char * summarydatafilename = (char *) malloc(200);
-    strcpy(summarydatafilename, "summarydatafor");
-    strcat(summarydatafilename, "Sb"); strcat(summarydatafilename, Sbname);
-    strcat(summarydatafilename, "mub"); strcat(summarydatafilename, mubname);
-    strcat(summarydatafilename, "msf"); strcat(summarydatafilename, mutator_strength_factorname);
-    strcat(summarydatafilename, "msr"); strcat(summarydatafilename, mutator_switch_ratename);
-    strcat(summarydatafilename, "mb"); strcat(summarydatafilename, mutator_biasname);
-    strcat(summarydatafilename, ".txt");
+
+    char * summarydatafilename = (char *) malloc(64);
+    strcpy(summarydatafilename, "summary.txt");
     summarydatafilepointer = fopen(summarydatafilename, "w");
-    
+
     nodefilepointer = fopen("nodetable.txt", "w");
     edgefilepointer = fopen("edgetable.txt", "w");
     sitefilepointer = fopen("sitetable.txt", "w");
@@ -450,6 +609,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
      * once instead of every generation. Only nmodifierloci entries are used, but
      * it is sized for the worst case so it can be allocated before the draw. */
     int *locusmutatorcounts = malloc(sizeof(int) * haploidgenomelength);
+    int *chromosomemutatorcounts = malloc(sizeof(int) * numberofchromosomes);
 
     InitializePopulationRel(tskitstatus, &treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, wholepopulationwistree, wholepopulation, popsize, totalpopulationgenomelength, chromosomesize, numberofchromosomes, totaltimesteps, psumofwis, modifierlocuspositions, &nmodifierloci, mutatorconfig, miscfilepointer);
 
@@ -472,19 +632,15 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     fprintf(miscfilepointer, "Baseline rates: mu_deleterious=%g, mu_beneficial=%g\n", deleteriousmutationrate, beneficialmutationrate);
     fflush(miscfilepointer);
 
-    /* Optional per-individual tracking file (item 5). */
+    /* Optional per-individual tracking file. The header is built dynamically
+     * because it ends with one column per chromosome. */
     if (trackingconfig.enabled) {
-        char * individualfilename = (char *) malloc(400);
-        strcpy(individualfilename, "individualtrackingfor");
-        strcat(individualfilename, "Sb"); strcat(individualfilename, Sbname);
-        strcat(individualfilename, "mub"); strcat(individualfilename, mubname);
-        strcat(individualfilename, "msf"); strcat(individualfilename, mutator_strength_factorname);
-        strcat(individualfilename, "msr"); strcat(individualfilename, mutator_switch_ratename);
-        strcat(individualfilename, "mb"); strcat(individualfilename, mutator_biasname);
-        strcat(individualfilename, ".txt");
-        individualfilepointer = fopen(individualfilename, "w");
-        fprintf(individualfilepointer, "Generation,Individual,Wi,LogWi,DeleteriousMutationRate,BeneficialMutationRate,MutatorAlleleCount,AntiMutatorAlleleCount,ModifierSlots,NetModifierSum\n");
-        free(individualfilename);
+        int h;
+        individualfilepointer = fopen("individualtracking.txt", "w");
+        fprintf(individualfilepointer, "Generation,Individual,Wi,LogFitness,LogFitnessOffset,DeleteriousMutationRate,BeneficialMutationRate,MutatorAlleleCount,AntiMutatorAlleleCount,ModifierSlots,NetModifierSum");
+        for (h = 0; h < numberofchromosomes; h++) fprintf(individualfilepointer, ",MutatorsOnChr%d", h+1);
+        fprintf(individualfilepointer, "\n");
+        fflush(individualfilepointer);
     }
     
     double *logaveragefitnesseachNtimesteps;
@@ -524,7 +680,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     double slopeofvariance;
     int isburninphaseover = 0;
     int didpopulationcrash = 0;
-    int endofburninphase;
+    int endofburninphase = 0;   /* initialised: a resume can restore it from a checkpoint */
     int endofdelay = Nxtimesteps-1;
     int endofsimulation = Nxtimesteps-1;
     int Nxtimestepsafterburnin = 0;
@@ -556,8 +712,52 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
      * and leaves the absolute-fitness path untouched.
      * ------------------------------------------------------------------- */
     int istskitrecording = (tskitstatus == 1) ? 1 : 0;
-    
-    for (i = 0; i < Nxtimesteps; i++) {
+
+    /* ---------------------------------------------------------------------
+     * RESUME FROM A CHECKPOINT
+     * ---------------------------------------------------------------------
+     * Driven by the MUTATIONLOAD_RESUME environment variable rather than a
+     * command-line argument, so the 26-argument layout and every submission
+     * script stay unchanged. See relative_functions.h for the caveats.
+     * ------------------------------------------------------------------- */
+    int startgeneration = 0;
+    {
+        const char *resumepath = getenv("MUTATIONLOAD_RESUME");
+        if (resumepath != NULL && resumepath[0] != '\0') {
+            int storedseed = 0, storedgeneration = 0;
+            ReadCheckpoint(resumepath, wholepopulation, popsize, totalindividualgenomelength, chromosomesize, numberofchromosomes,
+                           &storedgeneration, &storedseed, modifierlocuspositions, &nmodifierloci,
+                           &isburninphaseover, &endofburninphase, &endofdelay, &Nxtimestepsafterburnin,
+                           &currenttimestep, &logfitnessoffset, &sumofwis,
+                           literallyjustlast200Ntimesteps, last200Ntimestepsvariance, logaveragefitnesseachNtimesteps,
+                           miscfilepointer);
+            nmodifierslots = 2 * nmodifierloci;
+            startgeneration = storedgeneration;
+
+            /* Rebuild everything derived from the restored arrays, then the
+             * selection tree, exactly as a renormalisation would. */
+            for (k = 0; k < popsize; k++) {
+                RecomputeIndividualFromArrays(&wholepopulation[k], totalindividualgenomelength, logfitnessoffset, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
+            }
+            RenormalizeFitness(wholepopulation, popsize, logfitnessoffset, wholepopulationwistree, psumofwis, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
+
+            /* Reseed both generators deterministically from the stored seed and
+             * generation. The continuation is reproducible and statistically
+             * valid, but is NOT the same realisation an uninterrupted run would
+             * have produced - the generator states themselves are not restored. */
+            {
+                unsigned long int resumeseed = (unsigned long int) storedseed * 2654435761UL + (unsigned long int) storedgeneration;
+                pcg32_srandom(resumeseed, resumeseed);
+                gsl_rng_set(randomnumbergeneratorforgamma, resumeseed);
+            }
+
+            fprintf(miscfilepointer, "Resumed from %s at generation %d (offset %Lg, %d modifier loci). Both generators reseeded from %d/%d; this is a valid but different realisation from an uninterrupted run.\n",
+                    resumepath, startgeneration, logfitnessoffset, nmodifierloci, storedseed, storedgeneration);
+            fflush(miscfilepointer);
+        }
+    }
+
+    for (i = startgeneration; i < Nxtimesteps; i++) {
         for (j = 0; j < popsize; j++) {
             currenttimestep += 1.0;            
             PerformOneTimeStepRel(istskitrecording, isabsolute, isburninphaseover, ismodular, elementsperlb, &treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, popsize, totaltimesteps, currenttimestep, wholepopulationwistree, wholepopulation, psumofwis, logfitnessoffset, chromosomesize, numberofchromosomes, totalindividualgenomelength, deleteriousmutationrate, beneficialmutationrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent1gameteFitness, parent1gameteMutators, &parent1state, parent2gameteFitness, parent2gameteMutators, &parent2state, randomnumbergeneratorforgamma, miscfilepointer, mutatorconfig);  
@@ -607,6 +807,21 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
             numberofrenormalizations++;
         }
 
+        /* Periodic restart checkpoint. Deliberately separate from the
+         * per-individual tracking interval: a checkpoint is popsize * 2L * 12
+         * bytes, which is about 2.2 GB at popsize 20000. */
+        if (trackingconfig.checkpointinterval > 0 && ((i + 1) % trackingconfig.checkpointinterval) == 0) {
+            char checkpointpath[64];
+            snprintf(checkpointpath, sizeof(checkpointpath), "checkpoint_gen%d.bin", i + 1);
+            WriteCheckpoint(checkpointpath, wholepopulation, popsize, totalindividualgenomelength, chromosomesize, numberofchromosomes,
+                            Nxtimesteps, i + 1, randomnumberseed, modifierlocuspositions, nmodifierloci,
+                            isburninphaseover, endofburninphase, endofdelay, Nxtimestepsafterburnin,
+                            currenttimestep, deleteriousmutationrate, beneficialmutationrate, Sb, Sd, mutatorconfig,
+                            logfitnessoffset, sumofwis,
+                            literallyjustlast200Ntimesteps, last200Ntimestepsvariance, logaveragefitnesseachNtimesteps,
+                            miscfilepointer);
+        }
+
         /* Optional detailed per-individual dump (item 5). Fires only when
          * enabled, only from trackingconfig.startgen onwards, and then only
          * every trackingconfig.interval generations. */
@@ -614,7 +829,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
             int generation = i + 1;
             if (generation >= trackingconfig.startgen &&
                 ((generation - trackingconfig.startgen) % trackingconfig.interval) == 0) {
-                WriteIndividualSnapshot(individualfilepointer, wholepopulation, popsize, generation, nmodifierslots);
+                WriteIndividualSnapshot(individualfilepointer, wholepopulation, popsize, generation, nmodifierslots, logfitnessoffset, modifierlocuspositions, nmodifierloci, chromosomesize, numberofchromosomes, totalindividualgenomelength, chromosomemutatorcounts);
                 fflush(individualfilepointer);
             }
         }
@@ -757,7 +972,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
         free(wholepopulationnodesarray);
         /* free(sortedwisarray);  - see the commented-out allocation above (item 10) */
         free(modifierlocuspositions);
-        free(locusmutatorcounts);
+        free(locusmutatorcounts); free(chromosomemutatorcounts);
         free(parent1state.mutatorpositions); free(parent1state.antimutatorpositions);
         free(parent2state.mutatorpositions); free(parent2state.antimutatorpositions);
         tsk_table_collection_free(&treesequencetablecollection);
@@ -781,7 +996,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
         free(wholepopulationnodesarray);
         /* free(sortedwisarray);  - see the commented-out allocation above (item 10) */
         free(modifierlocuspositions);
-        free(locusmutatorcounts);
+        free(locusmutatorcounts); free(chromosomemutatorcounts);
         free(parent1state.mutatorpositions); free(parent1state.antimutatorpositions);
         free(parent2state.mutatorpositions); free(parent2state.antimutatorpositions);
         tsk_table_collection_free(&treesequencetablecollection);

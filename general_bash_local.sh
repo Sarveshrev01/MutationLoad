@@ -129,13 +129,41 @@ initial_mutator_fraction=0.0
 #	file regardless of this setting, so leave this off unless you need individual detail.
 #
 
-#0 = off, 1 = on
+#0 = off, 1 = on. When on, writes individualtracking.txt with one row per individual per
+#firing: Generation, Individual, Wi, LogFitness (absolute, offset-independent),
+#LogFitnessOffset, both realised mutation rates, MutatorAlleleCount,
+#AntiMutatorAlleleCount, ModifierSlots, NetModifierSum, and one MutatorsOnChrN column per
+#chromosome. Each firing writes $initialPopsize rows.
 trackindividuals=0
 #dump every this many N-timesteps (generations). Ignored when trackindividuals=0.
 trackinterval=100
 #first generation (1-based) eligible for dumping; use this to skip the burn-in
 trackstartgen=1
-#RESERVED: restart checkpoint every N generations; 0 = never. Not yet acted on.
+#
+#	--- Restart checkpoints -------------------------------------------------------------
+#	A checkpoint is a COMPLETE binary image of the simulation: every individual's fitness
+#	and modifier-state arrays, the shared modifier-locus positions, the log-fitness offset,
+#	the running sum and the burn-in detector's history. It is written to
+#	checkpoint_gen<N>.bin inside the output directory.
+#
+#	SIZE: popsize * 2 * numberofchromosomes * chromosomesize * 12 bytes.
+#	  popsize 500,   9200 blocks  ->  about   55 MB per checkpoint
+#	  popsize 20000, 9200 blocks  ->  about  2.2 GB per checkpoint
+#	Keep this interval MUCH larger than trackinterval, which is far cheaper.
+#	0 disables checkpointing entirely.
+#
+#	TO RESUME: set the MUTATIONLOAD_RESUME environment variable to a checkpoint path, e.g.
+#	    MUTATIONLOAD_RESUME=/path/to/checkpoint_gen5000.bin ./mutationload <the 26 arguments>
+#	It is an environment variable and not a 27th argument so that this script's argument
+#	list never has to change. The checkpoint's popsize, genome length, chromosomesize and
+#	numberofchromosomes are checked against the current run and any mismatch aborts.
+#
+#	CAVEAT: a resumed run is NOT the same realisation as an uninterrupted one. Both random
+#	number generators are reseeded deterministically from the stored seed and generation
+#	rather than having their internal state restored, so the continuation is reproducible
+#	and statistically valid but not bit-identical. Fine for continuing a long run; not
+#	suitable for reproducing one exact trajectory.
+#
 checkpointinterval=0
 
 # This build only runs relative fitness - the fitnesstype argument has been
