@@ -333,9 +333,11 @@ double CalculateVarianceInLogFitness(int popsize, Individual *wholepopulation, l
     double variancesum;
     variancesum = 0.0;
     long double logaverage;
-    logaverage = log(sumofwis / popsize);
+    /* logl/powl, not log/pow: sumofwis and fitness are both long double, and the
+     * double-precision versions silently truncated them before squaring. */
+    logaverage = logl(sumofwis / popsize);
     for (i = 0; i < popsize; i++) {
-        variancesum += (double) pow((log(wholepopulation[i].fitness) - logaverage), 2);
+        variancesum += (double) powl((logl(wholepopulation[i].fitness) - logaverage), 2);
     }
     variancesum = (variancesum/popsize);
     return variancesum;

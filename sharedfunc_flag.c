@@ -133,7 +133,7 @@ void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int el
     newwi = expl(wholepopulation[birthplace].logFitness);
 
     Fen_set(wholepopulationselectiontree, maxPopSize, newwi, birthplace);
-    wholepopulation[birthplace].fitness = (double) newwi;
+    wholepopulation[birthplace].fitness = newwi;
     *psumofloads += newwi;
     /* } */
 
@@ -179,7 +179,7 @@ Individual createIndividual(double *fitnessArray, int *mutatorArray, int totalin
  * ------------------------------------------------------------------------- */
 void RefreshIndividualRates(Individual *ind, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate){
     double modifierfactor = pow(mutator_strength_factor, (double) ind->netModifierSum);
-    ind->fitness = (double) expl(ind->logFitness);
+    ind->fitness = expl(ind->logFitness);
     ind->mutationRate           = baseline_deleterious_rate * modifierfactor;
     ind->beneficialMutationRate = baseline_beneficial_rate  * modifierfactor;
 }

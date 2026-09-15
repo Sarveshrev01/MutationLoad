@@ -232,7 +232,7 @@ void WriteIndividualSnapshot(FILE *individualfilepointer, Individual *wholepopul
         int n = wholepopulation[k].netModifierSum;
         int mutators     = (nmodifierslots + n) / 2;
         int antimutators = (nmodifierslots - n) / 2;
-        fprintf(individualfilepointer, "%d,%d,%.12g,%.12Lg,%.12g,%.12g,%d,%d,%d,%d\n",
+        fprintf(individualfilepointer, "%d,%d,%.12Lg,%.12Lg,%.12g,%.12g,%d,%d,%d,%d\n",
                 generation,
                 k + 1,
                 wholepopulation[k].fitness,

@@ -100,7 +100,14 @@ typedef struct{
     long double logFitness; // Running sum of fitnessArray over the whole diploid genome.
                           // Maintained INCREMENTALLY (see GameteState) so that a birth costs
                           // O(1) instead of a full O(2L) sweep.
-    double fitness;       // Overall fitness (Wi) = exp(logFitness)
+    long double fitness;  // Overall fitness (Wi) = expl(logFitness).
+                          // long double to match logFitness and sumofwis: Wi is the
+                          // exponential of a sum of thousands of block effects, and a
+                          // double truncation here was both a precision mismatch with
+                          // the Fenwick tree (long double) and an earlier overflow
+                          // point than the tree itself. On x86-64 this is the 80-bit
+                          // type; on Apple Silicon long double IS double, so the run
+                          // behaves identically there.
     double mutationRate;  // Actual DELETERIOUS mutation rate based on modifier loci (mu_d0 * f^n)
     double beneficialMutationRate; // Actual BENEFICIAL mutation rate (mu_b0 * f^n)
     int netModifierSum;   // n, the sum of mutatorArray over the whole diploid genome.
