@@ -94,7 +94,7 @@ double PerformDeath(bool isabsolute, int tskitstatus, int isburninphaseover, int
 /* NOTE (Tier 1): ismodular and elementsperlb are unused - modular epistasis is
  * not supported in this build and main() rejects it. The parameters are kept so
  * this shared signature is unchanged. */
-void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t childnode1, tsk_id_t childnode2, bool isabsolute, double *parent1gameteFitness, int *parent1gameteMutators, const GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, const GameteState *parent2state, int maxPopSize, int *pPopSize, int birthplace, Individual *wholepopulation, int totalindividualgenomelength, int deleteriousdistribution, long double *wholepopulationselectiontree, long double *wholepopulationdeathratesarray, int *wholepopulationindex, bool *wholepopulationisfree, long double *psumofloads, long double *psumofdeathrates, long double *psumofdeathratessquared, double b_0, double r,  int i_init, double s, long double *psumofload, long double *psumofloadsquared, FILE *miscfilepointer, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate)
+void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t childnode1, tsk_id_t childnode2, bool isabsolute, double *parent1gameteFitness, int *parent1gameteMutators, const GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, const GameteState *parent2state, int maxPopSize, int *pPopSize, int birthplace, Individual *wholepopulation, int totalindividualgenomelength, int deleteriousdistribution, long double *wholepopulationselectiontree, long double *wholepopulationdeathratesarray, int *wholepopulationindex, bool *wholepopulationisfree, long double *psumofloads, long double *psumofdeathrates, long double *psumofdeathratessquared, double b_0, double r,  int i_init, double s, long double *psumofload, long double *psumofloadsquared, FILE *miscfilepointer, long double logfitnessoffset, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate)
 {
     int i;
     long double newwi;
@@ -130,7 +130,11 @@ void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int el
      * }
      * else{
      */
-    newwi = expl(wholepopulation[birthplace].logFitness);
+    /* Wi is exponentiated RELATIVE to the current offset. Subtracting a constant
+     * from every individual's log-fitness multiplies every Wi by the same factor,
+     * which leaves every selection probability - a ratio - exactly unchanged. See
+     * the renormalisation block in RunSimulationRel. */
+    newwi = expl(wholepopulation[birthplace].logFitness - logfitnessoffset);
 
     Fen_set(wholepopulationselectiontree, maxPopSize, newwi, birthplace);
     wholepopulation[birthplace].fitness = newwi;
@@ -139,7 +143,7 @@ void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int el
 
     // Update Cached Mutation Rate for new individual. O(1): reads only the
     // already-assembled logFitness and netModifierSum.
-    RefreshIndividualRates(&wholepopulation[birthplace], mutator_strength_factor, baseline_deleterious_rate, baseline_beneficial_rate);
+    RefreshIndividualRates(&wholepopulation[birthplace], logfitnessoffset, mutator_strength_factor, baseline_deleterious_rate, baseline_beneficial_rate);
 
     /* NOTE (item 7): as in MutateGamete, the relative path passes a
      * recording-active flag here, not the raw tskitstatus. */
@@ -177,9 +181,9 @@ Individual createIndividual(double *fitnessArray, int *mutatorArray, int totalin
  * single birth. Both logFitness and netModifierSum are now carried through
  * recombination and mutation incrementally, so nothing here touches the arrays.
  * ------------------------------------------------------------------------- */
-void RefreshIndividualRates(Individual *ind, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate){
+void RefreshIndividualRates(Individual *ind, long double logfitnessoffset, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate){
     double modifierfactor = pow(mutator_strength_factor, (double) ind->netModifierSum);
-    ind->fitness = expl(ind->logFitness);
+    ind->fitness = expl(ind->logFitness - logfitnessoffset);
     ind->mutationRate           = baseline_deleterious_rate * modifierfactor;
     ind->beneficialMutationRate = baseline_beneficial_rate  * modifierfactor;
 }
@@ -192,7 +196,7 @@ void RefreshIndividualRates(Individual *ind, double mutator_strength_factor, dou
  * and available as the exact re-sync for the incrementally maintained values if
  * floating-point drift over a very long run ever needs correcting.
  * ------------------------------------------------------------------------- */
-void RecomputeIndividualFromArrays(Individual *ind, int totalindividualgenomelength, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate){
+void RecomputeIndividualFromArrays(Individual *ind, int totalindividualgenomelength, long double logfitnessoffset, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate){
     int i;
     long double sum = 0.0;
     int net = 0;
@@ -202,7 +206,7 @@ void RecomputeIndividualFromArrays(Individual *ind, int totalindividualgenomelen
     }
     ind->logFitness = sum;
     ind->netModifierSum = net;
-    RefreshIndividualRates(ind, mutator_strength_factor, baseline_deleterious_rate, baseline_beneficial_rate);
+    RefreshIndividualRates(ind, logfitnessoffset, mutator_strength_factor, baseline_deleterious_rate, baseline_beneficial_rate);
 }
 
 void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismodular, int elementsperlb, int isburninphaseover, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * childnode, int totaltimesteps, double currenttimestep, int persontorecombine, int chromosomesize, int numberofchromosomes, double *gameteFitness, int *gameteMutators, GameteState *gs, Individual *wholepopulation, int totalindividualgenomelength)

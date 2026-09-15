@@ -137,6 +137,71 @@ void SeedTreeSequenceTables(tsk_table_collection_t * treesequencetablecollection
 }
 
 /* =========================================================================
+ * SummariseLogFitness
+ * =========================================================================
+ * One O(N) pass over the population returning the mean, maximum and minimum of
+ * the ABSOLUTE logFitness - the raw sum over the fitness blocks, independent of
+ * whatever offset is currently in force. Used once per generation to decide
+ * whether to renormalise, to report the true mean log fitness, to detect a
+ * population crash, and to check that the spread has not grown past what the
+ * exponential can represent.
+ * ========================================================================= */
+void SummariseLogFitness(Individual *wholepopulation, int popsize, long double *pmean, long double *pmax, long double *pmin)
+{
+    int i;
+    long double sum = wholepopulation[0].logFitness;
+    long double mx  = wholepopulation[0].logFitness;
+    long double mn  = wholepopulation[0].logFitness;
+    for (i = 1; i < popsize; i++) {
+        long double v = wholepopulation[i].logFitness;
+        sum += v;
+        if (v > mx) mx = v;
+        if (v < mn) mn = v;
+    }
+    *pmean = sum / (long double) popsize;
+    *pmax  = mx;
+    *pmin  = mn;
+}
+
+/* =========================================================================
+ * RenormalizeFitness
+ * =========================================================================
+ * Moves the log-fitness offset to newoffset and rebuilds everything derived
+ * from it: every individual's Wi, the Fenwick selection tree, and sumofwis.
+ *
+ * WHY THIS DOES NOT PERTURB THE SIMULATION
+ * Parents are drawn with probability Wi / sum(Wj). Replacing the offset by a new
+ * value c multiplies every Wi by the identical factor exp(oldoffset - c), so
+ * every such probability is unchanged exactly - it is a ratio, and the factor
+ * cancels. Nothing else in the model reads an absolute fitness: the victim is
+ * chosen uniformly, mutation rates depend only on the modifier states, and the
+ * variance in log fitness is invariant under a constant shift. The rate of
+ * adaptation is preserved provided the offset is added back before the slope is
+ * fitted, which RunSimulationRel does.
+ *
+ * The Fenwick tree is rebuilt with the same in-place construction used at
+ * initialisation, so the tree is exact rather than accumulated through
+ * differences - which also clears any drift in the tree itself.
+ * ========================================================================= */
+void RenormalizeFitness(Individual *wholepopulation, int popsize, long double newoffset, long double *wholepopulationwistree, long double *psumofwis, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate)
+{
+    int i, j;
+    long double total = 0.0;
+
+    for (i = 0; i < popsize; i++) {
+        RefreshIndividualRates(&wholepopulation[i], newoffset, mutator_strength_factor, baseline_deleterious_rate, baseline_beneficial_rate);
+        wholepopulationwistree[i] = wholepopulation[i].fitness;
+        total += wholepopulation[i].fitness;
+    }
+    /* in-place Fenwick construction, identical to InitializePopulationRel */
+    for (i = 0; i < popsize; i++) {
+        j = i + LSB(i+1);
+        if (j < popsize) wholepopulationwistree[j] += wholepopulationwistree[i];
+    }
+    *psumofwis = total;
+}
+
+/* =========================================================================
  * WritePopulationModifierSummary
  * =========================================================================
  * Appends the mutation-rate-evolution columns to one row of the raw data file.
@@ -299,7 +364,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
 
     rawdatafilepointer = fopen(rawdatafilename, "w");
     /* Header extended with the mutation-rate-evolution columns (item 5). */
-    fprintf(rawdatafilepointer, "Nxtimesteps,Sum.of.wis,Variance.in.log.fitness,FractionSelectiveDeaths,FractionSelectiveDeaths_exponantiated,Mean.deleterious.mutation.rate,Mean.beneficial.mutation.rate,Mean.net.modifier.sum,Mean.mutator.freq.perindividual,Var.mutator.freq.acrossindividuals,Mean.mutator.freq.perlocus,Var.mutator.freq.acrossloci\n");
+    fprintf(rawdatafilepointer, "Nxtimesteps,Sum.of.wis,Mean.log.fitness,Log.fitness.offset,Variance.in.log.fitness,FractionSelectiveDeaths,Mean.deleterious.mutation.rate,Mean.beneficial.mutation.rate,Mean.net.modifier.sum,Mean.mutator.freq.perindividual,Var.mutator.freq.acrossindividuals,Mean.mutator.freq.perlocus,Var.mutator.freq.acrossloci\n");
     
     char * summarydatafilename = (char *) malloc(200);
     strcpy(summarydatafilename, "summarydatafor");
@@ -339,6 +404,28 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     
     long double sumofwis;
     long double *psumofwis = &sumofwis;
+
+    /* -------------------------------------------------------------------
+     * FITNESS RENORMALISATION
+     * -------------------------------------------------------------------
+     * Wi = expl(logFitness - logfitnessoffset). Selection reads only ratios of
+     * Wi, so the offset can be re-centred whenever the population's mean
+     * log-fitness drifts, which keeps Wi near 1 no matter how far the population
+     * adapts. Without this, mean log-fitness climbs without bound under
+     * selection, Wi overflows to inf, the Fenwick tree fills with inf, and
+     * ChooseParentWithTree returns the same individual on every draw - at which
+     * point the distinct-parent loop in PerformOneTimeStepRel spins forever.
+     *
+     * logfitnessexplimit is the largest argument expl() can take on this
+     * platform (about 709 where long double is 64-bit, about 11356 where it is
+     * the x86-64 80-bit type). Renormalisation bounds the MEAN; if the SPREAD
+     * ever approached this limit the run would still be in trouble, so it is
+     * checked explicitly and aborts with a diagnostic rather than hanging.
+     * ------------------------------------------------------------------- */
+    long double logfitnessoffset = 0.0;
+    const long double renormalizationthreshold = 200.0;
+    const long double logfitnessexplimit = logl(LDBL_MAX) - 1.0;
+    long int numberofrenormalizations = 0;
     long double *wholepopulationwistree;
     wholepopulationwistree = malloc(sizeof(long double) * popsize);
     
@@ -372,7 +459,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     // only full O(2L) sweep per individual in the whole run; from here on both
     // summary values are carried incrementally through recombination and mutation.
     for(k = 0; k < popsize; k++) {
-        RecomputeIndividualFromArrays(&wholepopulation[k], totalindividualgenomelength, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
+        RecomputeIndividualFromArrays(&wholepopulation[k], totalindividualgenomelength, logfitnessoffset, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
     }
 
     fprintf(miscfilepointer, "Modifier-locus setup: %d loci per chromosome x %d chromosomes = %d modifier loci per haplotype (%d diploid slots); initial mutator fraction=%g; f=%g; switch rate=%g; bias=%g\n",
@@ -447,7 +534,8 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     double varianceinlogfitness;   
     long double fitnessfittest;
     long double FractionSelectiveDeaths;
-    long double FractionSelectiveDeaths_exponantiatebirthrates;
+    long double meanlogfitness, maxlogfitness, minlogfitness;
+    /* long double FractionSelectiveDeaths_exponantiatebirthrates;  - removed, see below */
 
     /* ---------------------------------------------------------------------
      * TREE-SEQUENCE RECORDING STATE (item 7)
@@ -472,18 +560,52 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     for (i = 0; i < Nxtimesteps; i++) {
         for (j = 0; j < popsize; j++) {
             currenttimestep += 1.0;            
-            PerformOneTimeStepRel(istskitrecording, isabsolute, isburninphaseover, ismodular, elementsperlb, &treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, popsize, totaltimesteps, currenttimestep, wholepopulationwistree, wholepopulation, psumofwis, chromosomesize, numberofchromosomes, totalindividualgenomelength, deleteriousmutationrate, beneficialmutationrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent1gameteFitness, parent1gameteMutators, &parent1state, parent2gameteFitness, parent2gameteMutators, &parent2state, randomnumbergeneratorforgamma, miscfilepointer, mutatorconfig);  
+            PerformOneTimeStepRel(istskitrecording, isabsolute, isburninphaseover, ismodular, elementsperlb, &treesequencetablecollection, wholepopulationnodesarray, wholepopulationsitesarray, popsize, totaltimesteps, currenttimestep, wholepopulationwistree, wholepopulation, psumofwis, logfitnessoffset, chromosomesize, numberofchromosomes, totalindividualgenomelength, deleteriousmutationrate, beneficialmutationrate, Sb, beneficialdistribution, Sd, deleteriousdistribution, parent1gameteFitness, parent1gameteMutators, &parent1state, parent2gameteFitness, parent2gameteMutators, &parent2state, randomnumbergeneratorforgamma, miscfilepointer, mutatorconfig);  
         }
         
+        /* Absolute log-fitness summary, independent of the current offset. */
+        SummariseLogFitness(wholepopulation, popsize, &meanlogfitness, &maxlogfitness, &minlogfitness);
+
+        /* Spread guard. Renormalisation bounds the MEAN; if the population's
+         * spread alone ever exceeded what expl() can represent, Wi would still
+         * overflow. Abort with a diagnostic rather than hang. */
+        if ((maxlogfitness - meanlogfitness) > logfitnessexplimit || (meanlogfitness - minlogfitness) > logfitnessexplimit) {
+            fprintf(miscfilepointer, "\nFATAL: spread in log fitness at generation %d exceeds what expl() can represent (max-mean=%Lg, mean-min=%Lg, limit=%Lg).\n",
+                    i+1, maxlogfitness - meanlogfitness, meanlogfitness - minlogfitness, logfitnessexplimit);
+            fprintf(miscfilepointer, "Renormalisation re-centres the mean but cannot bound the spread. Reduce the effect sizes (Sb, Sd) or the mutation rate.\n");
+            fflush(miscfilepointer);
+            fprintf(stderr, "FATAL: log-fitness spread too large at generation %d. See miscellaneous.txt.\n", i+1);
+            exit(1);
+        }
+
         varianceinlogfitness = CalculateVarianceInLogFitness(popsize, wholepopulation, *psumofwis);
         fitnessfittest = FindFittestWi(wholepopulation, popsize);
+        /* A ratio of two Wi values, so it is invariant under the offset. */
         FractionSelectiveDeaths = (fitnessfittest-(sumofwis/popsize))/fitnessfittest;
-        FractionSelectiveDeaths_exponantiatebirthrates = (exp(fitnessfittest)-exp((sumofwis/popsize)))/exp(fitnessfittest);
-        
-        fprintf(rawdatafilepointer, "%d,%Lf,%.18f,%Lf,%Lf", i+1, *psumofwis, varianceinlogfitness, FractionSelectiveDeaths, FractionSelectiveDeaths_exponantiatebirthrates);
+        /* FractionSelectiveDeaths_exponantiated - REMOVED. It exponentiated a
+         * FITNESS rather than a log-fitness, so it printed nan as soon as Wi
+         * exceeded about 709, and it is not invariant under the offset. Nothing
+         * read it: it was declared, computed, printed and never used again, and
+         * no analysis script opens the raw data file. Original line:
+         * FractionSelectiveDeaths_exponantiatebirthrates = (exp(fitnessfittest)-exp((sumofwis/popsize)))/exp(fitnessfittest);
+         */
+
+        fprintf(rawdatafilepointer, "%d,%Lf,%.10Lf,%.10Lf,%.18f,%Lf", i+1, *psumofwis, meanlogfitness, logfitnessoffset, varianceinlogfitness, FractionSelectiveDeaths);
         WritePopulationModifierSummary(rawdatafilepointer, wholepopulation, popsize, totalindividualgenomelength, modifierlocuspositions, nmodifierloci, locusmutatorcounts);
         fprintf(rawdatafilepointer, "\n");
         fflush(rawdatafilepointer);
+
+        /* -----------------------------------------------------------------
+         * Re-centre the offset when the mean has drifted far enough. Doing this
+         * at a generation boundary, after the row has been written, keeps the
+         * reported Sum.of.wis and Log.fitness.offset consistent with each other
+         * within every row. The dynamics are untouched: see RenormalizeFitness.
+         * ----------------------------------------------------------------- */
+        if (fabsl(meanlogfitness - logfitnessoffset) > renormalizationthreshold) {
+            logfitnessoffset = meanlogfitness;
+            RenormalizeFitness(wholepopulation, popsize, logfitnessoffset, wholepopulationwistree, psumofwis, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
+            numberofrenormalizations++;
+        }
 
         /* Optional detailed per-individual dump (item 5). Fires only when
          * enabled, only from trackingconfig.startgen onwards, and then only
@@ -561,15 +683,28 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
         }
         
         if (i > endofdelay) {
-            logaveragefitnesseachNtimesteps[Nxtimestepsafterburnin] = log((double) *psumofwis / (double) popsize);
+            /* The offset MUST be added back here. log(sumofwis/popsize) is the
+             * mean Wi in offset-relative terms, so without this the series would
+             * jump by the offset change at every renormalisation and the fitted
+             * slope - the rate of adaptation - would be corrupted. With it, the
+             * series is the true absolute log of mean fitness and the slope is
+             * exactly what it would have been with no renormalisation at all. */
+            logaveragefitnesseachNtimesteps[Nxtimestepsafterburnin] = (double) (logl(*psumofwis / (long double) popsize) + logfitnessoffset);
             Nxtimestepsafterburnin += 1;
         }
         
-        long double currentfittestindividualswi = FindFittestWi(wholepopulation, popsize);
-        if (currentfittestindividualswi < pow(10.0, -10.0)) {
+        /* Population-crash detection. This used to test the fittest Wi against
+         * 1e-10, which no longer works: renormalisation keeps Wi centred near 1,
+         * so the fittest individual is always of order 1 however badly the
+         * population is actually doing. The test is now on the ABSOLUTE log
+         * fitness of the fittest individual, which is what "fitness has collapsed
+         * to 1e-10" always meant. logl(1e-10) = -23.0259. */
+        if (maxlogfitness < -23.02585093) {
             endofsimulation = i;
             i = Nxtimesteps;
             didpopulationcrash = 1;
+            fprintf(miscfilepointer, "Population crash called at generation %d: fittest absolute log fitness %Lg is below log(1e-10).\n", i+1, maxlogfitness);
+            fflush(miscfilepointer);
         }
     }
     
@@ -605,6 +740,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     if (isburninphaseover == 1) {
         slopeoflogfitness = CalculateSlopeOfLogFitness(endofsimulation, endofdelay, logaveragefitnesseachNtimesteps);
         fprintf(summarydatafilepointer, "Slope of log(fitness) after the burn-in phase: %f\n", slopeoflogfitness);
+        fprintf(summarydatafilepointer, "Fitness renormalisations performed: %ld (final log-fitness offset %Lg)\n", numberofrenormalizations, logfitnessoffset);
         fclose(rawdatafilepointer); 
         fclose(summarydatafilepointer);
         fclose(nodefilepointer); fclose(edgefilepointer); fclose(sitefilepointer); fclose(mutationfilepointer);
@@ -630,6 +766,7 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
 
     if (isburninphaseover == 0) {
         fprintf(summarydatafilepointer, "End of burn-in phase not reached.");
+        fprintf(summarydatafilepointer, "\nFitness renormalisations performed: %ld (final log-fitness offset %Lg)\n", numberofrenormalizations, logfitnessoffset);
         fclose(rawdatafilepointer); fclose(summarydatafilepointer);
         fclose(nodefilepointer); fclose(edgefilepointer); fclose(sitefilepointer); fclose(mutationfilepointer);
         if (individualfilepointer != NULL) fclose(individualfilepointer);
@@ -654,12 +791,13 @@ double RunSimulationRel(int tskitstatus, bool isabsolute, bool ismodular, int el
     return -1.0;   /* unreachable; silences -Wreturn-type */
 }
 
-void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t *treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, int popsize, int totaltimesteps, double currenttimestep, long double *wholepopulationwistree, Individual *wholepopulation, long double * psumofwis, int chromosomesize, int numberofchromosomes, int totalindividualgenomelength, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, double *parent1gameteFitness, int *parent1gameteMutators, GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, GameteState *parent2state, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, MutatorConfig mutatorconfig)
+void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t *treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, int popsize, int totaltimesteps, double currenttimestep, long double *wholepopulationwistree, Individual *wholepopulation, long double * psumofwis, long double logfitnessoffset, int chromosomesize, int numberofchromosomes, int totalindividualgenomelength, double deleteriousmutationrate, double beneficialmutationrate, double Sb, int beneficialdistribution, double Sd, int deleteriousdistribution, double *parent1gameteFitness, int *parent1gameteMutators, GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, GameteState *parent2state, gsl_rng * randomnumbergeneratorforgamma, FILE *miscfilepointer, MutatorConfig mutatorconfig)
 {
     /* NOTE (item 7): RunSimulationRel passes its istskitrecording flag in the
      * tskitstatus slot, so everything below records only when recording is
      * actually active. */
     int currentparent1, currentparent2, currentvictim;
+    long int distinctparentattempts = 0;
     currentvictim = ChooseVictim(popsize);
     currentparent1 = ChooseParentWithTree(wholepopulationwistree, popsize, *psumofwis, miscfilepointer);
     currentparent2 = ChooseParentWithTree(wholepopulationwistree, popsize, *psumofwis, miscfilepointer);
@@ -667,6 +805,18 @@ void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseov
      * individual there is no second distinct parent and this would spin forever. */
     while (currentparent1 == currentparent2) {
         if (popsize < 2) break;
+        /* Backstop. With a healthy selection tree this loop exits almost at once.
+         * It can only spin forever if ChooseParentWithTree keeps returning the
+         * same index, which happens when the tree holds inf or nan - the failure
+         * that renormalisation now prevents. The cap is far above anything
+         * legitimate skew could produce, and turns a silent multi-day stall into
+         * an immediate diagnostic. */
+        if (++distinctparentattempts > 10000000L) {
+            fprintf(miscfilepointer, "\nFATAL: could not draw two distinct parents in 10^7 attempts at timestep %f. sumofwis=%Lg. This indicates a non-finite or degenerate selection tree.\n", currenttimestep, *psumofwis);
+            fflush(miscfilepointer);
+            fprintf(stderr, "FATAL: degenerate parent selection. See miscellaneous.txt.\n");
+            exit(1);
+        }
         currentparent2 = ChooseParentWithTree(wholepopulationwistree, popsize, *psumofwis, miscfilepointer);
     }
     
@@ -697,7 +847,7 @@ void PerformOneTimeStepRel(int tskitstatus, bool isabsolute, int isburninphaseov
     
     PerformDeath(isabsolute, tskitstatus, isburninphaseover, popsize, pPopSize, currentvictim, deleteriousdistribution, wholepopulationwistree, wholepopulation, NULL, NULL, NULL, psumofwis, NULL, NULL, 0, 0, 0, 0, NULL, NULL, wholepopulationnodesarray, miscfilepointer);
     
-    PerformBirth(tskitstatus, isburninphaseover, ismodular, elementsperlb, treesequencetablecollection, wholepopulationnodesarray, childnode1, childnode2, isabsolute, parent1gameteFitness, parent1gameteMutators, parent1state, parent2gameteFitness, parent2gameteMutators, parent2state, popsize, pPopSize, currentvictim, wholepopulation, totalindividualgenomelength, deleteriousdistribution, wholepopulationwistree, NULL, NULL, NULL, psumofwis, NULL, NULL, 0, 0, 0, 0, NULL, NULL, miscfilepointer, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
+    PerformBirth(tskitstatus, isburninphaseover, ismodular, elementsperlb, treesequencetablecollection, wholepopulationnodesarray, childnode1, childnode2, isabsolute, parent1gameteFitness, parent1gameteMutators, parent1state, parent2gameteFitness, parent2gameteMutators, parent2state, popsize, pPopSize, currentvictim, wholepopulation, totalindividualgenomelength, deleteriousdistribution, wholepopulationwistree, NULL, NULL, NULL, psumofwis, NULL, NULL, 0, 0, 0, 0, NULL, NULL, miscfilepointer, logfitnessoffset, mutatorconfig.strengthfactor, deleteriousmutationrate, beneficialmutationrate);
 }
 
 void InitializePopulationRel(int tskitstatus, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * wholepopulationsitesarray, long double *wholepopulationwistree, Individual *wholepopulation, int popsize, int totalpopulationgenomelength, int chromosomesize, int numberofchromosomes, int totaltimesteps, long double * psumofwis, int *modifierlocuspositions, int *pnmodifierloci, MutatorConfig mutatorconfig, FILE *miscfilepointer) 

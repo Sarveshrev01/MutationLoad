@@ -100,7 +100,7 @@ typedef struct{
     long double logFitness; // Running sum of fitnessArray over the whole diploid genome.
                           // Maintained INCREMENTALLY (see GameteState) so that a birth costs
                           // O(1) instead of a full O(2L) sweep.
-    long double fitness;  // Overall fitness (Wi) = expl(logFitness).
+    long double fitness;  // Overall fitness (Wi) = expl(logFitness - logfitnessoffset).
                           // long double to match logFitness and sumofwis: Wi is the
                           // exponential of a sum of thousands of block effects, and a
                           // double truncation here was both a precision mismatch with
@@ -150,19 +150,19 @@ double PerformDeath(bool isabsolute, int tskitstatus, int isburninphaseover, int
 
 /* PerformBirth takes the two gametes' GameteState instead of a modifier mask, and
  * assembles the newborn's logFitness and netModifierSum by ADDING them - no sweep. */
-void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t childnode1, tsk_id_t childnode2, bool isabsolute, double *parent1gameteFitness, int *parent1gameteMutators, const GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, const GameteState *parent2state, int maxPopSize, int *pPopSize, int birthplace, Individual *wholepopulation, int totalindividualgenomelength, int deleteriousdistribution, long double *wholepopulationselectiontree, long double *wholepopulationdeathratesarray, int *wholepopulationindex, bool *wholepopulationisfree, long double *psumofloads, long double *psumofdeathrates, long double *psumofdeathratessquared, double b_0, double r,  int i_init, double s, long double *psumofload, long double *psumofloadsquared, FILE *miscfilepointer, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate);
+void PerformBirth(int tskitstatus, int isburninphaseover, bool ismodular, int elementsperlb, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t childnode1, tsk_id_t childnode2, bool isabsolute, double *parent1gameteFitness, int *parent1gameteMutators, const GameteState *parent1state, double *parent2gameteFitness, int *parent2gameteMutators, const GameteState *parent2state, int maxPopSize, int *pPopSize, int birthplace, Individual *wholepopulation, int totalindividualgenomelength, int deleteriousdistribution, long double *wholepopulationselectiontree, long double *wholepopulationdeathratesarray, int *wholepopulationindex, bool *wholepopulationisfree, long double *psumofloads, long double *psumofdeathrates, long double *psumofdeathratessquared, double b_0, double r,  int i_init, double s, long double *psumofload, long double *psumofloadsquared, FILE *miscfilepointer, long double logfitnessoffset, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate);
 
 // Individual helper functions
 Individual createIndividual(double *fitnessArray, int *mutatorArray, int totalindividualgenomelength);
 
 /* Derives fitness and both mutation rates from the already-maintained logFitness
  * and netModifierSum. O(1); does NOT touch the arrays. */
-void RefreshIndividualRates(Individual *ind, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate);
+void RefreshIndividualRates(Individual *ind, long double logfitnessoffset, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate);
 
 /* Full O(2L) recomputation of logFitness and netModifierSum straight from the
  * arrays. Used at initialisation, and available to re-sync the incrementally
  * maintained values if floating-point drift ever needs correcting. */
-void RecomputeIndividualFromArrays(Individual *ind, int totalindividualgenomelength, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate);
+void RecomputeIndividualFromArrays(Individual *ind, int totalindividualgenomelength, long double logfitnessoffset, double mutator_strength_factor, double baseline_deleterious_rate, double baseline_beneficial_rate);
 
 void RecombineChromosomesIntoGamete(bool isabsolute, int tskitstatus, bool ismodular, int elementsperlb, int isburninphaseover, tsk_table_collection_t * treesequencetablecollection, tsk_id_t * wholepopulationnodesarray, tsk_id_t * childnode, int totaltimesteps, double currenttimestep, int persontorecombine, int chromosomesize, int numberofchromosomes, double *gameteFitness, int *gameteMutators, GameteState *gs, Individual *wholepopulation, int totalindividualgenomelength);
 
